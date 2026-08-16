@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Finance Hub — Verify OTP</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/supabase-config.js"></script>
+</head>
+<body>
+  <div class="auth-wrap">
+    <div class="auth-logo">Finance<span class="dot">.</span>Hub</div>
+    <div class="auth-tag" id="sentTo">Enter the 6-digit code we sent you</div>
+
+    <div id="banner" class="banner hidden"></div>
+
+    <form id="otpForm">
+      <div class="otp-inputs">
+        <input type="tel" maxlength="1" inputmode="numeric" class="otp-digit" required>
+        <input type="tel" maxlength="1" inputmode="numeric" class="otp-digit" required>
+        <input type="tel" maxlength="1" inputmode="numeric" class="otp-digit" required>
+        <input type="tel" maxlength="1" inputmode="numeric" class="otp-digit" required>
+        <input type="tel" maxlength="1" inputmode="numeric" class="otp-digit" required>
+        <input type="tel" maxlength="1" inputmode="numeric" class="otp-digit" required>
+      </div>
+      <div class="countdown" id="countdown">Code expires in 05:00</div>
+      <button type="submit" class="btn btn-primary">Verify</button>
+    </form>
+
+    <div class="auth-switch">
+      <a href="#" id="resendLink">Resend OTP</a>
+    </div>
+  </div>
+
+  <script type="module">
+    import { supabase } from './assets/app.js';
+
+    const identifier = sessionStorage.getItem('fh_otp_identifier') || '';
+    document.getElementById('sentTo').textContent = identifier
+      ? `Code sent to ${identifier}` : 'Enter the 6-digit code we sent you';
+
+    const digits = [...document.querySelectorAll('.otp-digit')];
+    digits.forEach((el, i) => {
+      el.addEventListener('input', () => {
+        if (el.value && digits[i + 1]) digits[i + 1].focus();
+      });
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Backspace' && !el.value && digits[i - 1]) digits[i - 1].focus();
+      });
+    });
+
+    let seconds = 300;
+    const countdownEl = document.getElementById('countdown');
+    const timer = setInterval(() => {
+      seconds--;
+      const m = String(Math.floor(seconds / 60)).padStart(2, '0');
+      const s = String(seconds % 60).padStart(2, '0');
+      countdownEl.textContent = `Code expires in ${m}:${s}`;
+      if (seconds <= 0) {
+        clearInterval(timer);
+        countdownEl.textContent = 'Code expired — tap Resend OTP';
+      }
+    }, 1000);
+
+    const banner = document.getElementById('banner');
+    const form = document.getElementById('otpForm');
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const code = digits.map(d => d.value).join('');
+      if (code.length !== 6) return;
+      banner.classList.add('hidden');
+      try {
+        const isEmail = identifier.includes('@');
+        const params = isEmail
+          ? { email: identifier, token: code, type: 'email' }
+          : { phone: identifier, token: code, type: 'sms' };
+        const { error } = await supabase.auth.verifyOtp(params);
+        if (error) throw error;
+        window.location.href = 'dashboard.html';
+      } catch (err) {
+        banner.classList.remove('hidden');
+        banner.className = 'banner error';
+        banner.textContent = seconds <= 0
+          ? 'This code has expired. Request a new one.'
+          : (err.message || 'Invalid OTP. Please try again.');
+      }
+    });
+
+    document.getElementById('resendLink').addEventListener('click', async (e) => {
+      e.preventDefault();
+      const isEmail = identifier.includes('@');
+      const { error } = await supabase.auth.signInWithOtp(
+        isEmail ? { email: identifier } : { phone: identifier }
+      );
+      banner.classList.remove('hidden');
+      banner.className = error ? 'banner error' : 'banner success';
+      banner.textContent = error ? error.message : 'A new code has been sent.';
+      seconds = 300;
+    });
+  </script>
+</body>
+</html>

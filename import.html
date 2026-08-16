@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Finance Hub — Excel Import</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/supabase-config.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header" id="appHeader"></header>
+    <main class="page">
+      <div class="page-title">Excel Import</div>
+      <div id="banner" class="banner hidden"></div>
+
+      <div class="card" id="step1">
+        <div class="section-label" style="margin-top:0;">Step 1 · Select file</div>
+        <p class="text-sm text-muted">Only these sheets are imported: <strong>Expense Zinnia</strong>, <strong>Expense Whispering Grooves</strong>, <strong>Expense Genial</strong>, <strong>Ankit Self Expenses</strong>. Everything else (Weekly Payment Sheet, Sheet1, Tiles, etc.) is ignored.</p>
+        <input type="file" id="fileInput" accept=".xlsx,.xls">
+      </div>
+
+      <div class="card hidden" id="step2">
+        <div class="section-label" style="margin-top:0;">Step 2 · Sheets detected</div>
+        <div id="sheetList" class="text-sm"></div>
+      </div>
+
+      <div class="hidden" id="step3">
+        <div class="section-label">Step 3 · Preview &amp; validate</div>
+        <div class="summary-grid">
+          <div class="summary-card receipts"><div class="label">Valid</div><div class="value" id="cValid">0</div></div>
+          <div class="summary-card labour"><div class="label">Warnings</div><div class="value" id="cWarn">0</div></div>
+          <div class="summary-card"><div class="label">Duplicates</div><div class="value" id="cDup">0</div></div>
+          <div class="summary-card expenses"><div class="label">Invalid</div><div class="value" id="cInvalid">0</div></div>
+        </div>
+        <div class="card text-sm">Total amount (valid rows): <strong id="cTotal">₹0</strong></div>
+
+        <div class="card table-scroll">
+          <table class="data-table">
+            <thead><tr>
+              <th></th><th>Site</th><th>Date</th><th>Party</th><th>Amount</th><th>Sheet</th><th>Row</th>
+            </tr></thead>
+            <tbody id="previewBody"></tbody>
+          </table>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn btn-primary" id="confirmImportBtn">Confirm Import</button>
+          <button class="btn btn-secondary" id="resetBtn">Start Over</button>
+        </div>
+      </div>
+
+      <div class="hidden" id="step4">
+        <div class="section-label">Step 4 · Import complete</div>
+        <div class="card" id="resultSummary"></div>
+        <button class="btn btn-secondary" id="viewImportedBtn">View Imported Records</button>
+      </div>
+    </main>
+    <nav class="bottom-nav" id="bottomNav"></nav>
+  </div>
+
+  <script type="module">
+    import { requireAuth, supabase, renderChrome, getSites, formatINR, formatDate, showBanner, findOrCreateParty } from './assets/app.js';
+
+    let auth, sites, siteByName = {}, parsedRows = [];
+
+    const TARGET_SHEETS = [
+      { match: (n) => /^expense\s+zinnia$/i.test(n.trim()), site: 'Zinnia', kind: 'expense' },
+      { match: (n) => /^expense\s+whispering\s+groo?ves$/i.test(n.trim()), site: 'Whispering Grooves', kind: 'expense' },
+      { match: (n) => /^expense\s+genial$/i.test(n.trim()), site: 'Genial', kind: 'expense' },
+      { match: (n) => /ankit.*self.*expense/i.test(n.trim()), site: null, kind: 'ankit' },
+    ];
+
+    (async () => {
+      auth = await requireAuth(); if (!auth) return;
+      await renderChrome({ activeNav: 'import' });
+      sites = await getSites();
+      siteByName = Object.fromEntries(sites.map(s => [s.site_name.toLowerCase(), s]));
+
+      document.getElementById('fileInput').addEventListener('change', handleFile);
+      document.getElementById('resetBtn').addEventListener('click', () => location.reload());
+      document.getElementById('confirmImportBtn').addEventListener('click', runImport);
+    })();
+
+    function excelDateToISO(val) {
+      if (val === null || val === undefined || val === '') return null;
+      if (val instanceof Date && !isNaN(val)) return val.toISOString().slice(0, 10);
+      if (typeof val === 'number') {
+        const d = XLSX.SSF.parse_date_code(val);
+        if (!d) return null;
+        return `${d.y}-${String(d.m).padStart(2,'0')}-${String(d.d).padStart(2,'0')}`;
+      }
+      const parsed = new Date(val);
+      if (!isNaN(parsed)) return parsed.toISOString().slice(0, 10);
+      return null;
+    }
+
+    function num(val) {
+      if (val === null || val === undefined || val === '') return null;
+      const n = Number(String(val).replace(/[,₹\s]/g, ''));
+      return isNaN(n) ? NaN : n;
+    }
+    const clean = (v) => (v === undefined || v === null) ? null : String(v).trim() || null;
+
+    async function handleFile(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { cellDates: true });
+
+      const detected = wb.SheetNames.map(name => {
+        const rule = TARGET_SHEETS.find(r => r.match(name));
+        return { name, included: !!rule, rule };
+      });
+
+      document.getElementById('step2').classList.remove('hidden');
+      document.getElementById('sheetList').innerHTML = detected.map(d => `
+        <div class="flex between" style="padding:4px 0;">
+          <span>${d.name}</span>
+          <span class="chip ${d.included ? 'paid' : 'pending'}">${d.included ? 'Will import' : 'Skipped'}</span>
+        </div>`).join('');
+
+      parsedRows = [];
+      for (const d of detected.filter(x => x.included)) {
+        const sheet = wb.Sheets[d.name];
+        if (d.rule.kind === 'expense') {
+          parsedRows.push(...parseExpenseSheet(sheet, d.name, d.rule.site));
+        } else {
+          parsedRows.push(...parseAnkitSheet(sheet, d.name));
+        }
+      }
+
+      await validateAndDedupe();
+    }
+
+    function parseExpenseSheet(sheet, sheetName, siteName) {
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
+      const out = [];
+      rows.forEach((r, idx) => {
+        const get = (...keys) => { for (const k of keys) { if (r[k] !== undefined) return r[k]; } return null; };
+        out.push({
+          site_name: siteName,
+          transaction_date_raw: get('Date'),
+          description: clean(get('Description')),
+          challan_no: clean(get('Challan Nos', 'Challan No', 'Challan Nos.')),
+          party_name: clean(get('Supplier Name')),
+          material_name: clean(get('Material Name')),
+          expense_head: clean(get('Expense Head')),
+          expense_type: clean(get('Type')),
+          amount_raw: get('Expenses Debit'),
+          payment_status: clean(get('Payment Status')),
+          paid_by: clean(get('Payemnt Done by', 'Payment Done by', 'Paid By')),
+          payment_mode: normalizeMode(get('Payement Mode', 'Payment Mode')),
+          remark: clean(get('Remark')),
+          source_sheet: sheetName,
+          source_row: Number(get('S.no.', 'S.No.')) || (idx + 2),
+        });
+      });
+      return out;
+    }
+
+    function normalizeMode(v) {
+      if (!v) return null;
+      const s = String(v).trim().toLowerCase();
+      if (s.startsWith('cash')) return 'Cash';
+      if (s.startsWith('online') || s.includes('bank') || s.includes('upi') || s.includes('neft') || s.includes('rtgs')) return 'Online';
+      return null;
+    }
+
+    // Ankit Self Expenses: three site sections (stacked or side-by-side).
+    // Heuristic: scan raw grid for cells matching a site name; treat the next
+    // non-empty row as that section's header (Date / Amount / Type of Expense),
+    // then read rows below/right until the block ends.
+    function parseAnkitSheet(sheet, sheetName) {
+      const grid = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: false });
+      const siteNames = ['Genial', 'Zinnia', 'Whispering Grooves'];
+      const anchors = [];
+      grid.forEach((row, r) => {
+        row.forEach((cell, c) => {
+          if (cell && siteNames.some(s => String(cell).trim().toLowerCase() === s.toLowerCase())) {
+            anchors.push({ r, c, site: siteNames.find(s => s.toLowerCase() === String(cell).trim().toLowerCase()) });
+          }
+        });
+      });
+
+      const out = [];
+      anchors.forEach((a, ai) => {
+        // find header row within next 2 rows, in a small column window from a.c
+        let headerRow = -1, colMap = {};
+        for (let hr = a.r; hr <= a.r + 2 && hr < grid.length; hr++) {
+          const row = grid[hr] || [];
+          const window = row.slice(a.c, a.c + 8);
+          const dateIdx = window.findIndex(v => v && /date/i.test(v));
+          const amtIdx = window.findIndex(v => v && /amount/i.test(v));
+          const typeIdx = window.findIndex(v => v && /type/i.test(v));
+          if (dateIdx > -1 && amtIdx > -1) {
+            headerRow = hr;
+            colMap = { date: a.c + dateIdx, amount: a.c + amtIdx, type: typeIdx > -1 ? a.c + typeIdx : -1 };
+            break;
+          }
+        }
+        if (headerRow === -1) return;
+
+        // block ends at next anchor's row (if any, same or lower) else sheet end
+        const nextAnchorRow = anchors[ai + 1]?.r ?? grid.length;
+        for (let dr = headerRow + 1; dr < grid.length && dr < nextAnchorRow; dr++) {
+          const row = grid[dr] || [];
+          const dateVal = row[colMap.date];
+          const amtVal = row[colMap.amount];
+          const typeVal = colMap.type > -1 ? row[colMap.type] : null;
+          if (!dateVal && !amtVal) continue; // skip blank rows
+          out.push({
+            site_name: a.site,
+            transaction_date_raw: dateVal,
+            description: clean(typeVal),
+            expense_type: clean(typeVal),
+            party_name: null,
+            material_name: null,
+            expense_head: null,
+            amount_raw: amtVal,
+            payment_status: null,
+            paid_by: 'Ankit',
+            payment_mode: null,
+            remark: null,
+            source_sheet: sheetName,
+            source_row: dr + 1,
+          });
+        }
+      });
+      return out;
+    }
+
+    async function validateAndDedupe() {
+      document.getElementById('step3').classList.remove('hidden');
+      let valid = 0, warn = 0, dup = 0, invalid = 0, totalAmount = 0;
+      const results = [];
+
+      for (const row of parsedRows) {
+        const site = siteByName[(row.site_name || '').toLowerCase()];
+        const isoDate = excelDateToISO(row.transaction_date_raw);
+        const amount = num(row.amount_raw);
+
+        let status = 'ok', reason = '';
+        if (!site) { status = 'bad'; reason = 'Site Mapping Error'; }
+        else if (!isoDate) { status = 'bad'; reason = 'Invalid Date'; }
+        else if (amount === null) { status = 'bad'; reason = 'Amount Missing'; }
+        else if (isNaN(amount) || amount <= 0) { status = 'bad'; reason = 'Invalid Amount'; }
+
+        if (status === 'ok') {
+          // duplicate check against DB
+          const { data: existing } = await supabase.from('expense_transactions')
+            .select('id')
+            .eq('source_sheet', row.source_sheet)
+            .eq('source_row', row.source_row)
+            .eq('site_id', site.id)
+            .eq('transaction_date', isoDate)
+            .eq('amount', amount)
+            .maybeSingle();
+          if (existing) { status = 'dup'; reason = 'Duplicate – Skipped'; }
+        }
+        if (status === 'ok' && !row.payment_mode) { status = 'warn'; reason = 'Payment mode not specified'; }
+
+        if (status === 'ok') { valid++; totalAmount += amount; }
+        else if (status === 'warn') { valid++; totalAmount += amount; warn++; }
+        else if (status === 'dup') dup++;
+        else invalid++;
+
+        results.push({ ...row, site, isoDate, amount, status, reason });
+      }
+
+      document.getElementById('cValid').textContent = valid;
+      document.getElementById('cWarn').textContent = warn;
+      document.getElementById('cDup').textContent = dup;
+      document.getElementById('cInvalid').textContent = invalid;
+      document.getElementById('cTotal').textContent = formatINR(totalAmount);
+
+      document.getElementById('previewBody').innerHTML = results.map(r => `
+        <tr>
+          <td><span class="status-dot ${r.status}"></span>${r.reason || 'Imported Successfully'}</td>
+          <td>${r.site ? r.site.site_name : (r.site_name || '—')}</td>
+          <td>${r.isoDate ? formatDate(r.isoDate) : (r.transaction_date_raw || '—')}</td>
+          <td>${r.party_name || r.expense_type || '—'}</td>
+          <td style="text-align:right;">${r.amount != null && !isNaN(r.amount) ? formatINR(r.amount) : '—'}</td>
+          <td>${r.source_sheet}</td>
+          <td>${r.source_row}</td>
+        </tr>`).join('');
+
+      window.__importResults = results;
+    }
+
+    async function runImport() {
+      const btn = document.getElementById('confirmImportBtn');
+      btn.disabled = true; btn.textContent = 'Importing…';
+      const results = window.__importResults || [];
+      let imported = 0, duplicate = 0, invalid = 0, total = 0;
+      const bySite = {}, bySheet = {};
+
+      for (const r of results) {
+        if (r.status === 'dup') { duplicate++; continue; }
+        if (r.status === 'bad') { invalid++; continue; }
+
+        const party = r.party_name ? await findOrCreateParty(r.party_name, 'Supplier') : null;
+        const payload = {
+          site_id: r.site.id,
+          transaction_date: r.isoDate,
+          description: r.description,
+          challan_no: r.challan_no || null,
+          party_id: party?.id || null,
+          party_name_snapshot: r.party_name || null,
+          material_name: r.material_name || null,
+          expense_head: r.expense_head || null,
+          expense_type: r.expense_type || null,
+          amount: r.amount,
+          payment_status: r.payment_status || null,
+          paid_by: r.paid_by || null,
+          payment_mode: r.payment_mode || null,
+          remark: r.remark || null,
+          source_sheet: r.source_sheet,
+          source_row: r.source_row,
+          source_type: 'import',
+          created_by: auth.profile.id,
+        };
+        const { error } = await supabase.from('expense_transactions').insert(payload);
+        if (error) { invalid++; continue; }
+        imported++; total += r.amount;
+        bySite[r.site.site_name] = (bySite[r.site.site_name] || 0) + r.amount;
+        bySheet[r.source_sheet] = (bySheet[r.source_sheet] || 0) + r.amount;
+      }
+
+      await supabase.from('import_runs').insert({
+        file_name: document.getElementById('fileInput').files[0]?.name || null,
+        imported_by: auth.profile.id,
+        rows_processed: results.length,
+        rows_imported: imported,
+        rows_duplicate: duplicate,
+        rows_invalid: invalid,
+        total_amount: total,
+        summary: { bySite, bySheet }
+      });
+
+      document.getElementById('step3').classList.add('hidden');
+      document.getElementById('step4').classList.remove('hidden');
+      document.getElementById('resultSummary').innerHTML = `
+        <div class="flex between" style="padding:4px 0;"><span>Rows processed</span><strong>${results.length}</strong></div>
+        <div class="flex between" style="padding:4px 0;"><span>Successfully imported</span><strong style="color:var(--receipt)">${imported}</strong></div>
+        <div class="flex between" style="padding:4px 0;"><span>Duplicates skipped</span><strong>${duplicate}</strong></div>
+        <div class="flex between" style="padding:4px 0;"><span>Invalid rows</span><strong style="color:var(--expense)">${invalid}</strong></div>
+        <div class="flex between" style="padding:4px 0;"><span>Total imported amount</span><strong>${formatINR(total)}</strong></div>
+        <div class="section-label">Site-wise totals</div>
+        ${Object.entries(bySite).map(([k,v]) => `<div class="flex between"><span>${k}</span><span>${formatINR(v)}</span></div>`).join('') || '<div class="text-sm text-muted">—</div>'}
+        <div class="section-label">Source-sheet-wise totals</div>
+        ${Object.entries(bySheet).map(([k,v]) => `<div class="flex between"><span>${k}</span><span>${formatINR(v)}</span></div>`).join('') || '<div class="text-sm text-muted">—</div>'}
+      `;
+      document.getElementById('viewImportedBtn').addEventListener('click', () => window.location.href = 'supplier-expenses.html');
+    }
+  </script>
+</body>
+</html>

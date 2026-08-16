@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Finance Hub — Client Receipts</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/supabase-config.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header" id="appHeader"></header>
+
+    <main class="page">
+      <div class="flex between center">
+        <div class="page-title">Client Receipts</div>
+        <button class="btn btn-primary btn-sm" id="toggleFormBtn">+ New</button>
+      </div>
+      <div class="subnav-strip" id="subNav"></div>
+
+      <div id="banner" class="banner hidden"></div>
+
+      <form id="paymentForm" class="card hidden">
+        <div class="field">
+          <label for="clientName">Client</label>
+          <input type="text" id="clientName" list="clientList" placeholder="Type client name" required>
+          <datalist id="clientList"></datalist>
+        </div>
+        <div class="field">
+          <label for="siteSel">Site</label>
+          <select id="siteSel" required></select>
+        </div>
+        <div class="field">
+          <label for="paymentDate">Payment date</label>
+          <input type="date" id="paymentDate" required>
+        </div>
+        <div class="field">
+          <label for="amount">Amount</label>
+          <input type="number" id="amount" inputmode="decimal" min="0.01" step="0.01" required>
+        </div>
+        <div class="field">
+          <label>Payment mode</label>
+          <div class="mode-toggle">
+            <label><input type="radio" name="paymentMode" value="Cash" checked><span>Cash</span></label>
+            <label><input type="radio" name="paymentMode" value="Online"><span>Online</span></label>
+          </div>
+        </div>
+        <div class="field">
+          <label><input type="checkbox" id="gstApplicable" style="width:auto;display:inline-block;margin-right:6px;">GST applicable</label>
+        </div>
+        <div class="field hidden" id="gstAmountField">
+          <label for="gstAmount">GST amount</label>
+          <input type="number" id="gstAmount" inputmode="decimal" min="0" step="0.01">
+        </div>
+        <div class="field">
+          <label for="utr">UTR number (optional)</label>
+          <input type="text" id="utr" placeholder="e.g. UTR12345678">
+        </div>
+        <div class="field">
+          <label for="remarks">Remarks</label>
+          <textarea id="remarks" rows="2"></textarea>
+        </div>
+        <div class="field">
+          <label for="attachments">Attachments</label>
+          <input type="file" id="attachments" multiple accept=".pdf,.jpg,.jpeg,.png">
+          <div class="hint">Payment screenshots, bank receipts, UTR proof.</div>
+        </div>
+        <div class="btn-row">
+          <button type="submit" class="btn btn-primary" id="saveBtn">Save Payment</button>
+          <button type="button" class="btn btn-secondary" id="cancelBtn">Cancel</button>
+        </div>
+      </form>
+
+      <div class="search-bar">
+        <input type="search" id="searchBox" placeholder="Search client name…">
+      </div>
+      <div class="filter-row">
+        <select id="filterSite"><option value="">All sites</option></select>
+        <select id="filterMode">
+          <option value="">Any mode</option><option value="Cash">Cash</option><option value="Online">Online</option>
+        </select>
+        <select id="filterRange">
+          <option value="">All time</option>
+          <option value="week">This week</option>
+          <option value="month">This month</option>
+          <option value="year">This year</option>
+        </select>
+      </div>
+
+      <div class="card" id="listCard"><div class="text-sm text-muted">Loading…</div></div>
+    </main>
+
+    <nav class="bottom-nav" id="bottomNav"></nav>
+  </div>
+
+  <script type="module">
+    import {
+      requireAuth, supabase, renderChrome, renderSubNav, currentSiteId, getSites,
+      formatINR, formatDate, todayISO, showBanner, debounce, logAudit, findOrCreateParty
+    } from './assets/app.js';
+
+    let auth, sites;
+
+    (async () => {
+      auth = await requireAuth();
+      if (!auth) return;
+      await renderChrome({ activeNav: 'transactions' });
+      renderSubNav('client');
+      sites = await getSites();
+
+      const siteSel = document.getElementById('siteSel');
+      const filterSite = document.getElementById('filterSite');
+      siteSel.innerHTML = sites.map(s => `<option value="${s.id}">${s.site_name}</option>`).join('');
+      filterSite.innerHTML += sites.map(s => `<option value="${s.id}">${s.site_name}</option>`).join('');
+
+      document.getElementById('paymentDate').value = todayISO();
+
+      const form = document.getElementById('paymentForm');
+      const toggleBtn = document.getElementById('toggleFormBtn');
+      const openForm = () => { form.classList.remove('hidden'); toggleBtn.classList.add('hidden'); document.getElementById('clientName').focus(); };
+      toggleBtn.addEventListener('click', openForm);
+      document.getElementById('cancelBtn').addEventListener('click', () => { form.classList.add('hidden'); toggleBtn.classList.remove('hidden'); form.reset(); });
+      if (new URLSearchParams(location.search).get('new') === '1') openForm();
+
+      document.getElementById('gstApplicable').addEventListener('change', (e) => {
+        document.getElementById('gstAmountField').classList.toggle('hidden', !e.target.checked);
+      });
+
+      const clientNameInput = document.getElementById('clientName');
+      clientNameInput.addEventListener('input', debounce(async () => {
+        const { data } = await supabase.from('parties').select('party_name').eq('party_type', 'Client').ilike('party_name', `%${clientNameInput.value}%`).limit(10);
+        document.getElementById('clientList').innerHTML = (data || []).map(p => `<option value="${p.party_name}">`).join('');
+      }, 250));
+
+      const banner = document.getElementById('banner');
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const saveBtn = document.getElementById('saveBtn');
+        saveBtn.disabled = true;
+        try {
+          const clientName = clientNameInput.value.trim();
+          const amount = parseFloat(document.getElementById('amount').value);
+          const gstApplicable = document.getElementById('gstApplicable').checked;
+          const gstAmount = gstApplicable ? parseFloat(document.getElementById('gstAmount').value || '0') : 0;
+          if (!clientName) throw new Error('Client name is required.');
+          if (!(amount > 0)) throw new Error('Amount must be greater than zero.');
+
+          const party = await findOrCreateParty(clientName, 'Client');
+          const payload = {
+            client_id: party?.id || null,
+            client_name: clientName,
+            site_id: document.getElementById('siteSel').value,
+            payment_date: document.getElementById('paymentDate').value,
+            amount,
+            payment_mode: document.querySelector('input[name="paymentMode"]:checked').value,
+            gst_applicable: gstApplicable,
+            gst_amount: gstAmount,
+            utr_number: document.getElementById('utr').value.trim() || null,
+            remarks: document.getElementById('remarks').value.trim() || null,
+            created_by: auth.profile.id,
+          };
+          const { data: inserted, error } = await supabase.from('client_payments').insert(payload).select().single();
+          if (error) throw error;
+
+          const files = document.getElementById('attachments').files;
+          for (const file of files) {
+            const path = `client_payments/${inserted.id}/${Date.now()}_${file.name}`;
+            const { error: upErr } = await supabase.storage.from('attachments').upload(path, file);
+            if (!upErr) {
+              await supabase.from('attachments').insert({
+                transaction_table: 'client_payments', transaction_id: inserted.id,
+                file_path: path, file_name: file.name, file_type: file.type, uploaded_by: auth.profile.id
+              });
+            }
+          }
+
+          await logAudit('create', 'client_payments', inserted.id, { amount, client: clientName });
+          showBanner(banner, `Saved — transaction ${inserted.id.slice(0, 8)}`, 'success');
+          form.reset();
+          document.getElementById('paymentDate').value = todayISO();
+          form.classList.add('hidden');
+          toggleBtn.classList.remove('hidden');
+          loadList();
+        } catch (err) {
+          showBanner(banner, err.message || 'Could not save payment.', 'error');
+        } finally {
+          saveBtn.disabled = false;
+        }
+      });
+
+      async function loadList() {
+        const listCard = document.getElementById('listCard');
+        let q = supabase.from('client_payments').select('*').eq('status', 'active').order('payment_date', { ascending: false }).limit(100);
+        const siteId = currentSiteId();
+        if (siteId !== 'all') q = q.eq('site_id', siteId);
+        const fSite = filterSite.value; if (fSite) q = q.eq('site_id', fSite);
+        const fMode = document.getElementById('filterMode').value; if (fMode) q = q.eq('payment_mode', fMode);
+        const search = document.getElementById('searchBox').value.trim();
+        if (search) q = q.ilike('client_name', `%${search}%`);
+        const range = document.getElementById('filterRange').value;
+        if (range) {
+          const now = new Date(); let from;
+          if (range === 'week') { from = new Date(now); from.setDate(now.getDate() - 7); }
+          if (range === 'month') { from = new Date(now.getFullYear(), now.getMonth(), 1); }
+          if (range === 'year') { from = new Date(now.getFullYear(), 0, 1); }
+          q = q.gte('payment_date', from.toISOString().slice(0, 10));
+        }
+        const { data, error } = await q;
+        if (error) { listCard.innerHTML = `<div class="text-sm" style="color:var(--expense)">${error.message}</div>`; return; }
+        if (!data || data.length === 0) {
+          listCard.innerHTML = `<div class="empty-state"><span class="icon">₹</span><div class="title">No client receipts found</div><div>Adjust filters or add a new receipt.</div></div>`;
+          return;
+        }
+        const siteMap = Object.fromEntries(sites.map(s => [s.id, s.site_name]));
+        listCard.innerHTML = data.map(t => `
+          <div class="txn-row">
+            <div class="txn-main">
+              <div class="txn-party">${t.client_name}</div>
+              <div class="txn-meta">
+                <span class="site-tag">${siteMap[t.site_id] || ''}</span>
+                <span class="chip ${t.payment_mode.toLowerCase()}">${t.payment_mode}</span>
+                ${formatDate(t.payment_date)}
+              </div>
+            </div>
+            <div class="txn-amount"><div class="amt credit">${formatINR(t.amount)}</div>${t.gst_applicable ? `<div class="text-sm text-muted">GST ${formatINR(t.gst_amount)}</div>` : ''}</div>
+          </div>`).join('');
+      }
+
+      [filterSite, document.getElementById('filterMode'), document.getElementById('filterRange')]
+        .forEach(el => el.addEventListener('change', loadList));
+      document.getElementById('searchBox').addEventListener('input', debounce(loadList, 300));
+
+      loadList();
+    })();
+  </script>
+</body>
+</html>

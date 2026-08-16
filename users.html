@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Finance Hub — Users</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/supabase-config.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header" id="appHeader"></header>
+    <main class="page">
+      <div class="flex between center">
+        <div class="page-title">Users</div>
+        <button class="btn btn-primary btn-sm" id="toggleFormBtn">+ Add User</button>
+      </div>
+      <div id="banner" class="banner hidden"></div>
+
+      <div id="notAdmin" class="empty-state hidden">
+        <span class="icon">◎</span>
+        <div class="title">Super Admin only</div>
+        <div>Ask your Super Admin to manage users.</div>
+      </div>
+
+      <div id="adminArea" class="hidden">
+        <form id="userForm" class="card hidden">
+          <div class="field"><label for="uName">Name</label><input type="text" id="uName" required></div>
+          <div class="field"><label for="uMobile">Mobile</label><input type="tel" id="uMobile" placeholder="10-digit mobile"></div>
+          <div class="field"><label for="uEmail">Email</label><input type="email" id="uEmail" required></div>
+          <div class="field">
+            <label for="uRole">Role</label>
+            <select id="uRole">
+              <option value="viewer">Viewer</option>
+              <option value="site_manager">Site Manager</option>
+              <option value="accountant">Accountant</option>
+              <option value="super_admin">Super Admin</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Site access</label>
+            <div id="siteChecks"></div>
+          </div>
+          <div class="hint" style="margin-bottom:12px;">
+            New users are created via Supabase Auth invite (magic link). They'll set a password on first login,
+            then must verify OTP as configured.
+          </div>
+          <div class="btn-row">
+            <button type="submit" class="btn btn-primary" id="saveUserBtn">Send Invite</button>
+            <button type="button" class="btn btn-secondary" id="cancelUserBtn">Cancel</button>
+          </div>
+        </form>
+
+        <div class="card" id="userList"><div class="text-sm text-muted">Loading…</div></div>
+      </div>
+    </main>
+    <nav class="bottom-nav" id="bottomNav"></nav>
+  </div>
+
+  <script type="module">
+    import { requireAuth, supabase, renderChrome, getSites, showBanner, logAudit } from './assets/app.js';
+
+    (async () => {
+      const auth = await requireAuth(); if (!auth) return;
+      await renderChrome({ activeNav: 'users' });
+
+      if (auth.profile.role !== 'super_admin') {
+        document.getElementById('notAdmin').classList.remove('hidden');
+        return;
+      }
+      document.getElementById('adminArea').classList.remove('hidden');
+
+      const sites = await getSites();
+      document.getElementById('siteChecks').innerHTML = sites.map(s => `
+        <label style="display:flex;align-items:center;gap:6px;margin-bottom:6px;text-transform:none;font-size:14px;font-weight:400;">
+          <input type="checkbox" value="${s.id}" class="siteChk" style="width:auto;"> ${s.site_name}
+        </label>`).join('');
+
+      const form = document.getElementById('userForm');
+      const toggleBtn = document.getElementById('toggleFormBtn');
+      toggleBtn.addEventListener('click', () => { form.classList.remove('hidden'); toggleBtn.classList.add('hidden'); });
+      document.getElementById('cancelUserBtn').addEventListener('click', () => { form.classList.add('hidden'); toggleBtn.classList.remove('hidden'); form.reset(); });
+
+      const banner = document.getElementById('banner');
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const saveBtn = document.getElementById('saveUserBtn'); saveBtn.disabled = true;
+        try {
+          const email = document.getElementById('uEmail').value.trim();
+          const name = document.getElementById('uName').value.trim();
+          const role = document.getElementById('uRole').value;
+          const mobile = document.getElementById('uMobile').value.trim() || null;
+          const selectedSites = [...document.querySelectorAll('.siteChk:checked')].map(c => c.value);
+
+          // NOTE: inviting a user requires the Supabase service role key, which must never
+          // live in client-side code. In production, call a Supabase Edge Function (with the
+          // service key stored as a server secret) that performs supabase.auth.admin.inviteUserByEmail().
+          // This UI calls that function by name — deploy it as 'invite-user' in your project.
+          const { data, error } = await supabase.functions.invoke('invite-user', {
+            body: { email, name, role, mobile, sites: selectedSites }
+          });
+          if (error) throw error;
+
+          await logAudit('create', 'profiles', data?.userId || null, { email, role });
+          showBanner(banner, `Invite sent to ${email}.`, 'success');
+          form.reset();
+          form.classList.add('hidden'); toggleBtn.classList.remove('hidden');
+          loadUsers();
+        } catch (err) {
+          showBanner(banner, err.message || 'Could not invite user. Have you deployed the invite-user Edge Function?', 'error');
+        } finally { saveBtn.disabled = false; }
+      });
+
+      async function loadUsers() {
+        const listEl = document.getElementById('userList');
+        const { data, error } = await supabase.from('profiles').select('*').order('created_at', { ascending: false });
+        if (error) { listEl.innerHTML = `<div class="text-sm" style="color:var(--expense)">${error.message}</div>`; return; }
+        listEl.innerHTML = data.map(u => `
+          <div class="txn-row">
+            <div class="txn-main">
+              <div class="txn-party">${u.name}</div>
+              <div class="txn-meta">${u.email || u.mobile || ''} · ${u.role.replace('_',' ')}</div>
+            </div>
+            <div class="flex gap-8 center">
+              <span class="chip ${u.status === 'active' ? 'paid' : 'pending'}">${u.status}</span>
+              <button class="btn btn-sm btn-secondary toggleStatusBtn" data-id="${u.id}" data-status="${u.status}">
+                ${u.status === 'active' ? 'Deactivate' : 'Activate'}
+              </button>
+            </div>
+          </div>`).join('');
+
+        document.querySelectorAll('.toggleStatusBtn').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            const id = btn.dataset.id;
+            const newStatus = btn.dataset.status === 'active' ? 'inactive' : 'active';
+            const { error } = await supabase.from('profiles').update({ status: newStatus }).eq('id', id);
+            if (!error) { await logAudit('update', 'profiles', id, { status: newStatus }); loadUsers(); }
+          });
+        });
+      }
+
+      loadUsers();
+    })();
+  </script>
+</body>
+</html>

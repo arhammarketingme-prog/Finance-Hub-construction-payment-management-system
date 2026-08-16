@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Finance Hub — Dashboard</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/supabase-config.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header" id="appHeader"></header>
+
+    <main class="page">
+      <div class="page-title">Dashboard</div>
+
+      <div class="quick-actions">
+        <a class="quick-action" href="client-payments.html?new=1"><span class="icon">₹</span>Client Receipt</a>
+        <a class="quick-action" href="supplier-expenses.html?new=1"><span class="icon">⇩</span>Expense</a>
+        <a class="quick-action" href="contractor-payments.html?new=1"><span class="icon">⚒</span>Contractor</a>
+        <a class="quick-action" href="labour-payments.html?new=1"><span class="icon">⛏</span>Labour</a>
+        <a class="quick-action" href="self-expenses.html?new=1"><span class="icon">◍</span>Self</a>
+        <a class="quick-action" href="reports.html"><span class="icon">▤</span>Reports</a>
+      </div>
+
+      <div class="summary-grid" id="summaryGrid">
+        <div class="summary-card receipts"><div class="label">Client Receipts</div><div class="value">…</div></div>
+        <div class="summary-card expenses"><div class="label">Expenses</div><div class="value">…</div></div>
+        <div class="summary-card contractor"><div class="label">Contractor</div><div class="value">…</div></div>
+        <div class="summary-card labour"><div class="label">Labour</div><div class="value">…</div></div>
+        <div class="summary-card"><div class="label">Cash Balance</div><div class="value">…</div></div>
+        <div class="summary-card"><div class="label">Online Balance</div><div class="value">…</div></div>
+      </div>
+
+      <div class="card">
+        <div class="flex between center">
+          <div class="section-label" style="margin:0;">GST Summary</div>
+        </div>
+        <div id="gstSummary" class="text-sm text-muted">Loading…</div>
+      </div>
+
+      <div class="section-label">Site-wise Summary</div>
+      <div class="card" id="siteSummary"><div class="text-sm text-muted">Loading…</div></div>
+
+      <div class="section-label">Recent Transactions</div>
+      <div class="card" id="recentTxns"><div class="text-sm text-muted">Loading…</div></div>
+    </main>
+
+    <nav class="bottom-nav" id="bottomNav"></nav>
+  </div>
+
+  <script type="module">
+    import { requireAuth, supabase, renderChrome, currentSiteId, getSites, formatINR, formatDate } from './assets/app.js';
+
+    (async () => {
+      const auth = await requireAuth();
+      if (!auth) return;
+      await renderChrome({ activeNav: 'dashboard' });
+
+      const siteId = currentSiteId();
+      const siteFilter = (q) => siteId === 'all' ? q : q.eq('site_id', siteId);
+
+      async function sumTable(table, dateCol) {
+        let q = supabase.from(table).select('amount, payment_mode, site_id').eq('status', 'active');
+        q = siteFilter(q);
+        const { data, error } = await q;
+        if (error) { console.error(error); return { total: 0, cash: 0, online: 0, rows: [] }; }
+        let total = 0, cash = 0, online = 0;
+        data.forEach(r => {
+          total += Number(r.amount);
+          if (r.payment_mode === 'Cash') cash += Number(r.amount);
+          if (r.payment_mode === 'Online') online += Number(r.amount);
+        });
+        return { total, cash, online, rows: data };
+      }
+
+      const [clientR, expenseR, contractorR, labourR] = await Promise.all([
+        sumTable('client_payments'), sumTable('expense_transactions'),
+        sumTable('contractor_payments'), sumTable('labour_payments')
+      ]);
+
+      const grid = document.getElementById('summaryGrid');
+      const cashTotal = clientR.cash - expenseR.cash - contractorR.cash - labourR.cash;
+      const onlineTotal = clientR.online - expenseR.online - contractorR.online - labourR.online;
+      grid.innerHTML = `
+        <div class="summary-card receipts"><div class="label">Client Receipts</div><div class="value">${formatINR(clientR.total)}</div></div>
+        <div class="summary-card expenses"><div class="label">Expenses</div><div class="value">${formatINR(expenseR.total)}</div></div>
+        <div class="summary-card contractor"><div class="label">Contractor</div><div class="value">${formatINR(contractorR.total)}</div></div>
+        <div class="summary-card labour"><div class="label">Labour</div><div class="value">${formatINR(labourR.total)}</div></div>
+        <div class="summary-card"><div class="label">Cash Balance</div><div class="value">${formatINR(cashTotal)}</div></div>
+        <div class="summary-card"><div class="label">Online Balance</div><div class="value">${formatINR(onlineTotal)}</div></div>
+      `;
+
+      // GST summary
+      let gq = supabase.from('client_payments').select('gst_amount, gst_applicable').eq('status', 'active').eq('gst_applicable', true);
+      gq = siteFilter(gq);
+      const { data: gstRows } = await gq;
+      const gstTotal = (gstRows || []).reduce((s, r) => s + Number(r.gst_amount || 0), 0);
+      document.getElementById('gstSummary').innerHTML =
+        `<div class="flex between"><span>GST collected (client receipts)</span><strong>${formatINR(gstTotal)}</strong></div>`;
+
+      // Site-wise summary
+      const sites = await getSites();
+      const siteRows = await Promise.all(sites.map(async s => {
+        const { data: cp } = await supabase.from('client_payments').select('amount').eq('status', 'active').eq('site_id', s.id);
+        const { data: ex } = await supabase.from('expense_transactions').select('amount').eq('status', 'active').eq('site_id', s.id);
+        const recv = (cp || []).reduce((a, r) => a + Number(r.amount), 0);
+        const exp = (ex || []).reduce((a, r) => a + Number(r.amount), 0);
+        return { name: s.site_name, recv, exp };
+      }));
+      document.getElementById('siteSummary').innerHTML = siteRows.length
+        ? siteRows.map(s => `
+          <div class="flex between" style="padding:6px 0;">
+            <span class="site-tag">${s.name}</span>
+            <span class="text-sm"><span style="color:var(--receipt)">${formatINR(s.recv)}</span> · <span style="color:var(--expense)">${formatINR(s.exp)}</span></span>
+          </div>`).join('')
+        : '<div class="text-sm text-muted">No sites yet.</div>';
+
+      // Recent transactions (merged, most recent 8)
+      let rt = supabase.from('client_payments').select('id, client_name, amount, payment_date, payment_mode, site_id').eq('status', 'active').order('payment_date', { ascending: false }).limit(8);
+      rt = siteFilter(rt);
+      const { data: recent } = await rt;
+      const recentEl = document.getElementById('recentTxns');
+      if (!recent || recent.length === 0) {
+        recentEl.innerHTML = `<div class="empty-state"><span class="icon">▤</span><div class="title">No transactions yet</div><div>Add your first entry from Quick Actions above.</div></div>`;
+      } else {
+        recentEl.innerHTML = recent.map(t => `
+          <div class="txn-row">
+            <div class="txn-main">
+              <div class="txn-party">${t.client_name}</div>
+              <div class="txn-meta"><span class="chip ${t.payment_mode.toLowerCase()}">${t.payment_mode}</span>${formatDate(t.payment_date)}</div>
+            </div>
+            <div class="txn-amount"><div class="amt credit">${formatINR(t.amount)}</div></div>
+          </div>`).join('');
+      }
+    })();
+  </script>
+</body>
+</html>

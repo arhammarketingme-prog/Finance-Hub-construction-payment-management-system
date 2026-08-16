@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Finance Hub — Reports</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/supabase-config.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  @media print {
+    .app-header, .bottom-nav, .filter-row, .search-bar, #exportRow, .btn { display: none !important; }
+    .app-shell { padding-bottom: 0; }
+  }
+</style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header" id="appHeader"></header>
+    <main class="page">
+      <div class="page-title">Reports</div>
+
+      <div class="card">
+        <div class="filter-row" style="margin-bottom:10px;">
+          <select id="filterSite"><option value="">All sites</option></select>
+          <select id="filterType">
+            <option value="">All types</option>
+            <option value="client_payments">Client Receipts</option>
+            <option value="expense_transactions">Supplier / Self Expenses</option>
+            <option value="contractor_payments">Contractor Payments</option>
+            <option value="labour_payments">Labour Payments</option>
+          </select>
+          <select id="filterMode"><option value="">Any mode</option><option value="Cash">Cash</option><option value="Online">Online</option></select>
+        </div>
+        <div class="filter-row">
+          <input type="date" id="fromDate" style="border:1px solid var(--line);border-radius:20px;padding:6px 10px;font-size:12.5px;">
+          <input type="date" id="toDate" style="border:1px solid var(--line);border-radius:20px;padding:6px 10px;font-size:12.5px;">
+          <button class="btn btn-secondary btn-sm" id="applyBtn">Apply</button>
+        </div>
+      </div>
+
+      <div class="summary-grid">
+        <div class="summary-card"><div class="label">Total Records</div><div class="value" id="totRecords">0</div></div>
+        <div class="summary-card"><div class="label">Total Amount</div><div class="value" id="totAmount">₹0</div></div>
+        <div class="summary-card"><div class="label">Cash Total</div><div class="value" id="totCash">₹0</div></div>
+        <div class="summary-card"><div class="label">Online Total</div><div class="value" id="totOnline">₹0</div></div>
+      </div>
+
+      <div id="exportRow" class="btn-row" style="margin-bottom:16px;">
+        <button class="btn btn-secondary" id="exportExcelBtn">Export Excel</button>
+        <button class="btn btn-secondary" id="exportPdfBtn">Export PDF</button>
+      </div>
+
+      <div class="card table-scroll">
+        <table class="data-table" id="reportTable">
+          <thead><tr><th>Date</th><th>Type</th><th>Party</th><th>Site</th><th>Mode</th><th>Amount</th></tr></thead>
+          <tbody id="reportBody"><tr><td colspan="6" class="text-sm text-muted">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </main>
+    <nav class="bottom-nav" id="bottomNav"></nav>
+  </div>
+
+  <script type="module">
+    import { requireAuth, supabase, renderChrome, getSites, formatINR, formatDate } from './assets/app.js';
+
+    let auth, sites, currentRows = [];
+    const TYPE_LABELS = {
+      client_payments: 'Client Receipt',
+      expense_transactions: 'Expense',
+      contractor_payments: 'Contractor',
+      labour_payments: 'Labour'
+    };
+
+    (async () => {
+      auth = await requireAuth(); if (!auth) return;
+      await renderChrome({ activeNav: 'reports' });
+      sites = await getSites();
+      document.getElementById('filterSite').innerHTML += sites.map(s => `<option value="${s.id}">${s.site_name}</option>`).join('');
+
+      document.getElementById('applyBtn').addEventListener('click', loadReport);
+      document.getElementById('exportExcelBtn').addEventListener('click', exportExcel);
+      document.getElementById('exportPdfBtn').addEventListener('click', () => window.print());
+
+      async function fetchTable(table, dateCol, nameField, siteId, from, to, mode) {
+        let q = supabase.from(table).select('*').eq('status', 'active');
+        if (siteId) q = q.eq('site_id', siteId);
+        if (from) q = q.gte(dateCol, from);
+        if (to) q = q.lte(dateCol, to);
+        if (mode) q = q.eq('payment_mode', mode);
+        const { data, error } = await q;
+        if (error) { console.error(error); return []; }
+        return data.map(r => ({
+          date: r[dateCol],
+          type: table,
+          party: r[nameField] || '—',
+          site_id: r.site_id,
+          mode: r.payment_mode,
+          amount: Number(r.amount)
+        }));
+      }
+
+      async function loadReport() {
+        const siteId = document.getElementById('filterSite').value || null;
+        const type = document.getElementById('filterType').value;
+        const mode = document.getElementById('filterMode').value || null;
+        const from = document.getElementById('fromDate').value || null;
+        const to = document.getElementById('toDate').value || null;
+
+        const tasks = [];
+        if (!type || type === 'client_payments') tasks.push(fetchTable('client_payments', 'payment_date', 'client_name', siteId, from, to, mode));
+        if (!type || type === 'expense_transactions') tasks.push(fetchTable('expense_transactions', 'transaction_date', 'party_name_snapshot', siteId, from, to, mode));
+        if (!type || type === 'contractor_payments') tasks.push(fetchTable('contractor_payments', 'payment_date', 'contractor_name_snapshot', siteId, from, to, mode));
+        if (!type || type === 'labour_payments') tasks.push(fetchTable('labour_payments', 'payment_date', 'labour_name_snapshot', siteId, from, to, mode));
+
+        const results = (await Promise.all(tasks)).flat();
+        results.sort((a, b) => new Date(b.date) - new Date(a.date));
+        currentRows = results;
+
+        const siteMap = Object.fromEntries(sites.map(s => [s.id, s.site_name]));
+        const body = document.getElementById('reportBody');
+        body.innerHTML = results.length ? results.map(r => `
+          <tr>
+            <td>${formatDate(r.date)}</td>
+            <td>${TYPE_LABELS[r.type]}</td>
+            <td>${r.party}</td>
+            <td>${siteMap[r.site_id] || ''}</td>
+            <td>${r.mode || ''}</td>
+            <td style="text-align:right;">${formatINR(r.amount)}</td>
+          </tr>`).join('') : `<tr><td colspan="6" class="text-sm text-muted">No records match these filters.</td></tr>`;
+
+        const total = results.reduce((s, r) => s + r.amount, 0);
+        const cash = results.filter(r => r.mode === 'Cash').reduce((s, r) => s + r.amount, 0);
+        const online = results.filter(r => r.mode === 'Online').reduce((s, r) => s + r.amount, 0);
+        document.getElementById('totRecords').textContent = results.length;
+        document.getElementById('totAmount').textContent = formatINR(total);
+        document.getElementById('totCash').textContent = formatINR(cash);
+        document.getElementById('totOnline').textContent = formatINR(online);
+      }
+
+      function exportExcel() {
+        const siteMap = Object.fromEntries(sites.map(s => [s.id, s.site_name]));
+        const rows = currentRows.map(r => ({
+          Date: r.date, Type: TYPE_LABELS[r.type], Party: r.party,
+          Site: siteMap[r.site_id] || '', Mode: r.mode || '', Amount: r.amount
+        }));
+        const ws = XLSX.utils.json_to_sheet(rows);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Report');
+        XLSX.writeFile(wb, `finance-hub-report-${new Date().toISOString().slice(0,10)}.xlsx`);
+      }
+
+      loadReport();
+    })();
+  </script>
+</body>
+</html>

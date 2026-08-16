@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Finance Hub — Login</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/supabase-config.js"></script>
+</head>
+<body>
+  <div class="auth-wrap">
+    <div class="auth-logo">Finance<span class="dot">.</span>Hub</div>
+    <div class="auth-tag">Site ledger for Zinnia · Whispering Grooves · Genial</div>
+
+    <div id="banner" class="banner hidden"></div>
+
+    <div class="mode-toggle" style="margin-bottom:20px;">
+      <label><input type="radio" name="mode" value="password" checked><span>Password</span></label>
+      <label><input type="radio" name="mode" value="otp"><span>OTP</span></label>
+    </div>
+
+    <form id="loginForm">
+      <div class="field">
+        <label for="identifier">Mobile number or email</label>
+        <input type="text" id="identifier" placeholder="9876543210 or you@company.com" required>
+      </div>
+      <div class="field" id="passwordField">
+        <label for="password">Password</label>
+        <input type="password" id="password" placeholder="••••••••">
+      </div>
+      <button type="submit" class="btn btn-primary" id="submitBtn">Log In</button>
+    </form>
+
+    <div class="auth-switch">
+      <a href="#" id="forgotLink">Forgot password?</a>
+    </div>
+  </div>
+
+  <script type="module">
+    import { supabase } from './assets/app.js';
+
+    const form = document.getElementById('loginForm');
+    const passwordField = document.getElementById('passwordField');
+    const submitBtn = document.getElementById('submitBtn');
+    const banner = document.getElementById('banner');
+    let mode = 'password';
+
+    document.querySelectorAll('input[name="mode"]').forEach(r => {
+      r.addEventListener('change', (e) => {
+        mode = e.target.value;
+        passwordField.classList.toggle('hidden', mode === 'otp');
+        submitBtn.textContent = mode === 'otp' ? 'Send OTP' : 'Log In';
+      });
+    });
+
+    if (new URLSearchParams(location.search).get('inactive')) {
+      banner.classList.remove('hidden');
+      banner.className = 'banner error';
+      banner.textContent = 'This account is inactive. Contact your Super Admin.';
+    }
+
+    function isEmail(v) { return v.includes('@'); }
+    function toE164(v) {
+      // naive India-first normalization; adjust for your SMS provider/country
+      const digits = v.replace(/\D/g, '');
+      if (digits.length === 10) return '+91' + digits;
+      if (v.startsWith('+')) return v;
+      return '+' + digits;
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      submitBtn.disabled = true;
+      banner.classList.add('hidden');
+      const identifier = document.getElementById('identifier').value.trim();
+
+      try {
+        if (mode === 'password') {
+          const password = document.getElementById('password').value;
+          const email = isEmail(identifier) ? identifier : null;
+          if (!email) throw new Error('Password login requires an email address. Use OTP for mobile login.');
+          const { error } = await supabase.auth.signInWithPassword({ email, password });
+          if (error) throw error;
+          window.location.href = 'dashboard.html';
+        } else {
+          if (isEmail(identifier)) {
+            const { error } = await supabase.auth.signInWithOtp({ email: identifier });
+            if (error) throw error;
+          } else {
+            const { error } = await supabase.auth.signInWithOtp({ phone: toE164(identifier) });
+            if (error) throw error;
+          }
+          sessionStorage.setItem('fh_otp_identifier', identifier);
+          window.location.href = 'otp.html';
+        }
+      } catch (err) {
+        banner.classList.remove('hidden');
+        banner.className = 'banner error';
+        banner.textContent = err.message || 'Login failed. Please try again.';
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+
+    document.getElementById('forgotLink').addEventListener('click', async (e) => {
+      e.preventDefault();
+      const identifier = document.getElementById('identifier').value.trim();
+      if (!identifier || !isEmail(identifier)) {
+        banner.classList.remove('hidden');
+        banner.className = 'banner error';
+        banner.textContent = 'Enter your email above first, then tap "Forgot password?"';
+        return;
+      }
+      const { error } = await supabase.auth.resetPasswordForEmail(identifier);
+      banner.classList.remove('hidden');
+      banner.className = error ? 'banner error' : 'banner success';
+      banner.textContent = error ? error.message : 'Password reset link sent to your email.';
+    });
+
+    // If already logged in, skip straight to dashboard
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session) window.location.href = 'dashboard.html';
+    });
+  </script>
+</body>
+</html>

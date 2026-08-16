@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Finance Hub — Self Expenses</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/supabase-config.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header" id="appHeader"></header>
+    <main class="page">
+      <div class="flex between center">
+        <div class="page-title">Self Expenses</div>
+        <button class="btn btn-primary btn-sm" id="toggleFormBtn">+ New</button>
+      </div>
+      <div class="subnav-strip" id="subNav"></div>
+      <div id="banner" class="banner hidden"></div>
+
+      <form id="expenseForm" class="card hidden">
+        <div class="field"><label for="siteSel">Site</label><select id="siteSel" required></select></div>
+        <div class="field"><label for="txnDate">Date</label><input type="date" id="txnDate" required></div>
+        <div class="field"><label for="amount">Amount</label><input type="number" id="amount" min="0.01" step="0.01" required></div>
+        <div class="field"><label for="expenseType">Type of expense</label><input type="text" id="expenseType" placeholder="e.g. Travel, Site supplies" required></div>
+        <div class="field"><label for="remark">Remarks</label><textarea id="remark" rows="2"></textarea></div>
+        <div class="field">
+          <label>Payment mode</label>
+          <div class="mode-toggle">
+            <label><input type="radio" name="paymentMode" value="Cash" checked><span>Cash</span></label>
+            <label><input type="radio" name="paymentMode" value="Online"><span>Online</span></label>
+          </div>
+        </div>
+        <div class="field"><label for="attachments">Attachment</label><input type="file" id="attachments" multiple accept=".pdf,.jpg,.jpeg,.png"></div>
+        <div class="btn-row">
+          <button type="submit" class="btn btn-primary" id="saveBtn">Save Expense</button>
+          <button type="button" class="btn btn-secondary" id="cancelBtn">Cancel</button>
+        </div>
+      </form>
+
+      <div class="search-bar"><input type="search" id="searchBox" placeholder="Search type of expense…"></div>
+      <div class="filter-row">
+        <select id="filterSite"><option value="">All sites</option></select>
+        <select id="filterMode"><option value="">Any mode</option><option value="Cash">Cash</option><option value="Online">Online</option></select>
+      </div>
+      <div class="card" id="listCard"><div class="text-sm text-muted">Loading…</div></div>
+    </main>
+    <nav class="bottom-nav" id="bottomNav"></nav>
+  </div>
+
+  <script type="module">
+    import {
+      requireAuth, supabase, renderChrome, renderSubNav, currentSiteId, getSites,
+      formatINR, formatDate, todayISO, showBanner, debounce, logAudit
+    } from './assets/app.js';
+
+    let auth, sites;
+    (async () => {
+      auth = await requireAuth(); if (!auth) return;
+      await renderChrome({ activeNav: 'transactions' });
+      renderSubNav('self');
+      sites = await getSites();
+      document.getElementById('siteSel').innerHTML = sites.map(s => `<option value="${s.id}">${s.site_name}</option>`).join('');
+      document.getElementById('filterSite').innerHTML += sites.map(s => `<option value="${s.id}">${s.site_name}</option>`).join('');
+      document.getElementById('txnDate').value = todayISO();
+
+      const form = document.getElementById('expenseForm');
+      const toggleBtn = document.getElementById('toggleFormBtn');
+      const openForm = () => { form.classList.remove('hidden'); toggleBtn.classList.add('hidden'); };
+      toggleBtn.addEventListener('click', openForm);
+      document.getElementById('cancelBtn').addEventListener('click', () => { form.classList.add('hidden'); toggleBtn.classList.remove('hidden'); form.reset(); });
+      if (new URLSearchParams(location.search).get('new') === '1') openForm();
+
+      const banner = document.getElementById('banner');
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const saveBtn = document.getElementById('saveBtn'); saveBtn.disabled = true;
+        try {
+          const amount = parseFloat(document.getElementById('amount').value);
+          if (!(amount > 0)) throw new Error('Amount must be greater than zero.');
+          const payload = {
+            site_id: document.getElementById('siteSel').value,
+            transaction_date: document.getElementById('txnDate').value,
+            amount,
+            description: document.getElementById('expenseType').value.trim(),
+            expense_type: document.getElementById('expenseType').value.trim(),
+            remark: document.getElementById('remark').value.trim() || null,
+            payment_mode: document.querySelector('input[name="paymentMode"]:checked').value,
+            paid_by: auth.profile.name,
+            source_type: 'manual',
+            created_by: auth.profile.id,
+          };
+          const { data: inserted, error } = await supabase.from('expense_transactions').insert(payload).select().single();
+          if (error) throw error;
+          const files = document.getElementById('attachments').files;
+          for (const file of files) {
+            const path = `expense_transactions/${inserted.id}/${Date.now()}_${file.name}`;
+            const { error: upErr } = await supabase.storage.from('attachments').upload(path, file);
+            if (!upErr) await supabase.from('attachments').insert({
+              transaction_table: 'expense_transactions', transaction_id: inserted.id,
+              file_path: path, file_name: file.name, file_type: file.type, uploaded_by: auth.profile.id
+            });
+          }
+          await logAudit('create', 'expense_transactions', inserted.id, { amount, self: true });
+          showBanner(banner, 'Saved — self expense recorded', 'success');
+          form.reset(); document.getElementById('txnDate').value = todayISO();
+          form.classList.add('hidden'); toggleBtn.classList.remove('hidden');
+          loadList();
+        } catch (err) {
+          showBanner(banner, err.message || 'Could not save expense.', 'error');
+        } finally { saveBtn.disabled = false; }
+      });
+
+      async function loadList() {
+        const listCard = document.getElementById('listCard');
+        let q = supabase.from('expense_transactions').select('*').eq('status', 'active').eq('paid_by', auth.profile.name).order('transaction_date', { ascending: false }).limit(100);
+        const siteId = currentSiteId(); if (siteId !== 'all') q = q.eq('site_id', siteId);
+        const fSite = document.getElementById('filterSite').value; if (fSite) q = q.eq('site_id', fSite);
+        const fMode = document.getElementById('filterMode').value; if (fMode) q = q.eq('payment_mode', fMode);
+        const search = document.getElementById('searchBox').value.trim();
+        if (search) q = q.ilike('expense_type', `%${search}%`);
+        const { data, error } = await q;
+        if (error) { listCard.innerHTML = `<div class="text-sm" style="color:var(--expense)">${error.message}</div>`; return; }
+        if (!data || data.length === 0) {
+          listCard.innerHTML = `<div class="empty-state"><span class="icon">◍</span><div class="title">No self expenses found</div><div>Adjust filters or add a new expense.</div></div>`;
+          return;
+        }
+        const siteMap = Object.fromEntries(sites.map(s => [s.id, s.site_name]));
+        listCard.innerHTML = data.map(t => `
+          <div class="txn-row">
+            <div class="txn-main">
+              <div class="txn-party">${t.expense_type || t.description || 'Self expense'}</div>
+              <div class="txn-meta">
+                <span class="site-tag">${siteMap[t.site_id] || ''}</span>
+                <span class="chip ${t.payment_mode ? t.payment_mode.toLowerCase() : ''}">${t.payment_mode || ''}</span>
+                ${formatDate(t.transaction_date)}
+              </div>
+            </div>
+            <div class="txn-amount"><div class="amt debit">${formatINR(t.amount)}</div></div>
+          </div>`).join('');
+      }
+      [document.getElementById('filterSite'), document.getElementById('filterMode')].forEach(el => el.addEventListener('change', loadList));
+      document.getElementById('searchBox').addEventListener('input', debounce(loadList, 300));
+      loadList();
+    })();
+  </script>
+</body>
+</html>

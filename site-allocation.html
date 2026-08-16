@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Finance Hub — Site Allocation</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/supabase-config.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header" id="appHeader"></header>
+    <main class="page">
+      <div class="page-title">Site Allocation</div>
+      <div class="subnav-strip" id="subNav"></div>
+      <p class="text-sm text-muted mt-8" style="margin-bottom:14px;">Entries awaiting a payment status resolution ("Pending"), grouped by site.</p>
+      <div class="card" id="pendingList"><div class="text-sm text-muted">Loading…</div></div>
+    </main>
+    <nav class="bottom-nav" id="bottomNav"></nav>
+  </div>
+
+  <script type="module">
+    import { requireAuth, supabase, renderChrome, renderSubNav, getSites, formatINR, formatDate } from './assets/app.js';
+
+    (async () => {
+      const auth = await requireAuth(); if (!auth) return;
+      await renderChrome({ activeNav: 'transactions' });
+      renderSubNav('allocation');
+      const sites = await getSites();
+      const siteMap = Object.fromEntries(sites.map(s => [s.id, s.site_name]));
+
+      const tables = [
+        { table: 'expense_transactions', dateCol: 'transaction_date', nameCol: 'party_name_snapshot', label: 'Expense' },
+        { table: 'contractor_payments', dateCol: 'payment_date', nameCol: 'contractor_name_snapshot', label: 'Contractor' },
+        { table: 'labour_payments', dateCol: 'payment_date', nameCol: 'labour_name_snapshot', label: 'Labour' },
+      ];
+
+      const all = [];
+      for (const t of tables) {
+        const { data, error } = await supabase.from(t.table).select('*').eq('status', 'active').eq('payment_status', 'Pending');
+        if (!error) data.forEach(r => all.push({ ...r, __table: t.label, __date: r[t.dateCol], __name: r[t.nameCol] }));
+      }
+
+      const listEl = document.getElementById('pendingList');
+      if (all.length === 0) {
+        listEl.innerHTML = `<div class="empty-state"><span class="icon">✓</span><div class="title">Nothing pending</div><div>All entries have a resolved payment status.</div></div>`;
+        return;
+      }
+      all.sort((a, b) => new Date(b.__date) - new Date(a.__date));
+      listEl.innerHTML = all.map(r => `
+        <div class="txn-row">
+          <div class="txn-main">
+            <div class="txn-party">${r.__name || '—'}</div>
+            <div class="txn-meta">
+              <span class="site-tag">${siteMap[r.site_id] || ''}</span>
+              <span class="chip pending">${r.__table}</span>
+              ${formatDate(r.__date)}
+            </div>
+          </div>
+          <div class="txn-amount"><div class="amt debit">${formatINR(r.amount)}</div></div>
+        </div>`).join('');
+    })();
+  </script>
+</body>
+</html>
