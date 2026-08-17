@@ -9,9 +9,15 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   @media print {
-    .app-header, .bottom-nav, .filter-row, .search-bar, #exportRow, .btn { display: none !important; }
+    .app-header, .bottom-nav, .filter-row, .search-bar, #exportRow, .btn, .report-type-tabs { display: none !important; }
     .app-shell { padding-bottom: 0; }
   }
+  .report-type-tabs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 10px; -webkit-overflow-scrolling: touch; }
+  .report-type-tabs::-webkit-scrollbar { display: none; }
+  .rtab { flex: 0 0 auto; white-space: nowrap; font-size: 12.5px; font-weight: 600; padding: 8px 13px; border-radius: 20px; background: var(--card); color: var(--steel); border: 1px solid var(--line); }
+  .rtab.active { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .stat-row { display: flex; justify-content: space-between; padding: 5px 0; font-size: 13.5px; }
+  .stat-row strong { font-family: var(--font-display); font-size: 15px; }
 </style>
 </head>
 <body>
@@ -20,41 +26,75 @@
     <main class="page">
       <div class="page-title">Reports</div>
 
+      <div class="report-type-tabs" id="reportTabs">
+        <button class="rtab active" data-type="list">Transaction List</button>
+        <button class="rtab" data-type="party">Party-wise</button>
+        <button class="rtab" data-type="site">Site Summary</button>
+        <button class="rtab" data-type="pending">Pending / Outstanding</button>
+        <button class="rtab" data-type="gst">GST Summary</button>
+      </div>
+
+      <!-- shared filter card (fields shown/hidden per report type) -->
       <div class="card">
-        <div class="filter-row" style="margin-bottom:10px;">
+        <div class="filter-row" id="filtersCommon" style="margin-bottom:10px;">
           <select id="filterSite"><option value="">All sites</option></select>
-          <select id="filterType">
+          <select id="filterType" class="rt-list-only">
             <option value="">All types</option>
             <option value="client_payments">Client Receipts</option>
             <option value="expense_transactions">Supplier / Self Expenses</option>
             <option value="contractor_payments">Contractor Payments</option>
             <option value="labour_payments">Labour Payments</option>
           </select>
-          <select id="filterMode"><option value="">Any mode</option><option value="Cash">Cash</option><option value="Online">Online</option></select>
+          <select id="filterMode" class="rt-list-only rt-party-only"><option value="">Any mode</option><option value="Cash">Cash</option><option value="Online">Online</option></select>
         </div>
-        <div class="filter-row">
+        <div class="filter-row rt-party-only hidden" id="partyFilterRow">
+          <select id="partyType">
+            <option value="Client">Client</option>
+            <option value="Supplier">Supplier</option>
+            <option value="Contractor">Contractor</option>
+            <option value="Labour">Labour</option>
+          </select>
+          <input type="text" id="partyNameInput" list="partyOptions" placeholder="Type a name…" style="flex:1;min-width:140px;border:1px solid var(--line);border-radius:20px;padding:6px 12px;font-size:12.5px;">
+          <datalist id="partyOptions"></datalist>
+        </div>
+        <div class="filter-row rt-list-only rt-party-only rt-pending-only rt-gst-only">
           <input type="date" id="fromDate" style="border:1px solid var(--line);border-radius:20px;padding:6px 10px;font-size:12.5px;">
           <input type="date" id="toDate" style="border:1px solid var(--line);border-radius:20px;padding:6px 10px;font-size:12.5px;">
           <button class="btn btn-secondary btn-sm" id="applyBtn">Apply</button>
         </div>
       </div>
 
-      <div class="summary-grid">
-        <div class="summary-card"><div class="label">Total Records</div><div class="value" id="totRecords">0</div></div>
-        <div class="summary-card"><div class="label">Total Amount</div><div class="value" id="totAmount">₹0</div></div>
-        <div class="summary-card"><div class="label">Cash Total</div><div class="value" id="totCash">₹0</div></div>
-        <div class="summary-card"><div class="label">Online Total</div><div class="value" id="totOnline">₹0</div></div>
-      </div>
+      <div id="banner" class="banner hidden"></div>
 
-      <div id="exportRow" class="btn-row" style="margin-bottom:16px;">
+      <!-- ===== Summary stat cards (used by list / party / pending / gst) ===== -->
+      <div class="summary-grid rt-list-only rt-party-only rt-pending-only rt-gst-only" id="statGrid"></div>
+
+      <div id="exportRow" class="btn-row rt-list-only rt-party-only rt-pending-only rt-gst-only" style="margin-bottom:16px;">
         <button class="btn btn-secondary" id="exportExcelBtn">Export Excel</button>
         <button class="btn btn-secondary" id="exportPdfBtn">Export PDF</button>
       </div>
 
-      <div class="card table-scroll">
+      <!-- ===== Party ledger header card ===== -->
+      <div class="card hidden" id="partyHeaderCard"></div>
+
+      <!-- ===== Generic results table (list / party / pending / gst) ===== -->
+      <div class="card table-scroll rt-list-only rt-party-only rt-pending-only rt-gst-only" id="resultsCard">
         <table class="data-table" id="reportTable">
-          <thead><tr><th>Date</th><th>Type</th><th>Party</th><th>Site</th><th>Mode</th><th>Amount</th></tr></thead>
+          <thead id="reportThead"><tr><th>Date</th><th>Type</th><th>Party</th><th>Site</th><th>Mode</th><th>Amount</th></tr></thead>
           <tbody id="reportBody"><tr><td colspan="6" class="text-sm text-muted">Loading…</td></tr></tbody>
+        </table>
+      </div>
+
+      <!-- ===== Site summary matrix ===== -->
+      <div class="card table-scroll hidden" id="siteSummaryCard">
+        <table class="data-table" id="siteTable">
+          <thead>
+            <tr>
+              <th>Site</th><th>Client Rcv.</th><th>Expenses</th><th>Contractor</th><th>Labour</th>
+              <th>Cash</th><th>Online</th><th>GST</th>
+            </tr>
+          </thead>
+          <tbody id="siteBody"></tbody>
         </table>
       </div>
     </main>
@@ -62,14 +102,27 @@
   </div>
 
   <script type="module">
-    import { requireAuth, supabase, renderChrome, getSites, formatINR, formatDate } from './assets/app.js';
+    import {
+      requireAuth, supabase, renderChrome, getSites, formatINR, formatDate,
+      showBanner, fetchAllRows, searchParties, debounce
+    } from './assets/app.js';
 
-    let auth, sites, currentRows = [];
+    let auth, sites, currentType = 'list', currentRows = [], selectedParty = null;
     const TYPE_LABELS = {
-      client_payments: 'Client Receipt',
-      expense_transactions: 'Expense',
-      contractor_payments: 'Contractor',
-      labour_payments: 'Labour'
+      client_payments: 'Client Receipt', expense_transactions: 'Expense',
+      contractor_payments: 'Contractor', labour_payments: 'Labour'
+    };
+    const TABLE_META = {
+      client_payments:      { dateCol: 'payment_date',      nameCol: 'client_name' },
+      expense_transactions: { dateCol: 'transaction_date',  nameCol: 'party_name_snapshot' },
+      contractor_payments:  { dateCol: 'payment_date',      nameCol: 'contractor_name_snapshot' },
+      labour_payments:      { dateCol: 'payment_date',      nameCol: 'labour_name_snapshot' },
+    };
+    const PARTY_TABLE = {
+      Client: { table: 'client_payments', idCol: 'client_id', nameCol: 'client_name', dateCol: 'payment_date' },
+      Supplier: { table: 'expense_transactions', idCol: 'party_id', nameCol: 'party_name_snapshot', dateCol: 'transaction_date' },
+      Contractor: { table: 'contractor_payments', idCol: 'contractor_id', nameCol: 'contractor_name_snapshot', dateCol: 'payment_date' },
+      Labour: { table: 'labour_payments', idCol: 'labour_id', nameCol: 'labour_name_snapshot', dateCol: 'payment_date' },
     };
 
     (async () => {
@@ -78,90 +131,267 @@
       sites = await getSites();
       document.getElementById('filterSite').innerHTML += sites.map(s => `<option value="${s.id}">${s.site_name}</option>`).join('');
 
-      document.getElementById('applyBtn').addEventListener('click', loadReport);
+      document.querySelectorAll('.rtab').forEach(btn => {
+        btn.addEventListener('click', () => switchReportType(btn.dataset.type));
+      });
+      document.getElementById('applyBtn').addEventListener('click', runReport);
       document.getElementById('exportExcelBtn').addEventListener('click', exportExcel);
       document.getElementById('exportPdfBtn').addEventListener('click', () => window.print());
+      document.getElementById('partyType').addEventListener('change', () => { selectedParty = null; document.getElementById('partyNameInput').value = ''; refreshPartyOptions(); });
+      const partyNameInput = document.getElementById('partyNameInput');
+      partyNameInput.addEventListener('input', debounce(refreshPartyOptions, 250));
 
-      async function fetchTable(table, dateCol, nameField, siteId, from, to, mode) {
-        // PostgREST caps a single response at 1000 rows, so page through with
-        // .range() until a page comes back short — otherwise totals silently
-        // undercount once a table holds more than 1000 matching rows.
-        const PAGE = 1000;
-        let page = 0, all = [];
-        while (true) {
-          let q = supabase.from(table).select('*').eq('status', 'active');
+      async function refreshPartyOptions() {
+        const type = document.getElementById('partyType').value;
+        const list = await searchParties(partyNameInput.value, type);
+        document.getElementById('partyOptions').innerHTML = list.map(p => `<option value="${p.party_name}">`).join('');
+      }
+      refreshPartyOptions();
+
+      function switchReportType(type) {
+        currentType = type;
+        document.querySelectorAll('.rtab').forEach(b => b.classList.toggle('active', b.dataset.type === type));
+        document.querySelectorAll('.rt-list-only, .rt-party-only, .rt-pending-only, .rt-gst-only')
+          .forEach(el => el.classList.add('hidden'));
+        document.querySelectorAll(`.rt-${type}-only`).forEach(el => el.classList.remove('hidden'));
+        document.getElementById('siteSummaryCard').classList.toggle('hidden', type !== 'site');
+        document.getElementById('partyHeaderCard').classList.add('hidden');
+        if (type === 'party') document.getElementById('partyFilterRow').classList.remove('hidden');
+        runReport();
+      }
+
+      async function runReport() {
+        showBanner(document.getElementById('banner'), 'Loading report…', 'info');
+        if (currentType === 'list') await runListReport();
+        else if (currentType === 'party') await runPartyReport();
+        else if (currentType === 'site') await runSiteReport();
+        else if (currentType === 'pending') await runPendingReport();
+        else if (currentType === 'gst') await runGstReport();
+        document.getElementById('banner').classList.add('hidden');
+      }
+
+      function commonFilters() {
+        return {
+          siteId: document.getElementById('filterSite').value || null,
+          from: document.getElementById('fromDate').value || null,
+          to: document.getElementById('toDate').value || null,
+          mode: document.getElementById('filterMode').value || null,
+        };
+      }
+
+      async function fetchTable(table, dateCol, nameCol, extra = {}) {
+        const { siteId, from, to, mode } = { ...commonFilters(), ...extra };
+        const rows = await fetchAllRows((rangeFrom, rangeTo) => {
+          let q = supabase.from(table).select('*').eq('status', 'active').range(rangeFrom, rangeTo);
           if (siteId) q = q.eq('site_id', siteId);
           if (from) q = q.gte(dateCol, from);
           if (to) q = q.lte(dateCol, to);
           if (mode) q = q.eq('payment_mode', mode);
-          q = q.range(page * PAGE, page * PAGE + PAGE - 1);
-          const { data, error } = await q;
-          if (error) { console.error(error); break; }
-          all = all.concat(data);
-          if (data.length < PAGE) break;
-          page++;
-        }
-        return all.map(r => ({
-          date: r[dateCol],
-          type: table,
-          party: r[nameField] || '—',
-          site_id: r.site_id,
-          mode: r.payment_mode,
-          amount: Number(r.amount)
+          if (extra.eq) Object.entries(extra.eq).forEach(([k, v]) => { q = q.eq(k, v); });
+          return q;
+        });
+        return rows.map(r => ({
+          raw: r, date: r[dateCol], type: table, party: r[nameCol] || '—',
+          site_id: r.site_id, mode: r.payment_mode, amount: Number(r.amount), status: r.payment_status
         }));
       }
 
-      async function loadReport() {
-        const siteId = document.getElementById('filterSite').value || null;
+      function renderStatGrid(stats) {
+        document.getElementById('statGrid').innerHTML = stats.map(s => `
+          <div class="summary-card"><div class="label">${s.label}</div><div class="value">${s.value}</div></div>
+        `).join('');
+      }
+
+      function renderTable(rows, columns) {
+        document.getElementById('reportThead').innerHTML = `<tr>${columns.map(c => `<th${c.right ? ' style="text-align:right;"' : ''}>${c.label}</th>`).join('')}</tr>`;
+        document.getElementById('reportBody').innerHTML = rows.length
+          ? rows.map(r => `<tr>${columns.map(c => `<td${c.right ? ' style="text-align:right;"' : ''}>${c.render(r)}</td>`).join('')}</tr>`).join('')
+          : `<tr><td colspan="${columns.length}" class="text-sm text-muted">No records match these filters.</td></tr>`;
+      }
+
+      const siteMapOf = () => Object.fromEntries(sites.map(s => [s.id, s.site_name]));
+
+      async function runListReport() {
         const type = document.getElementById('filterType').value;
-        const mode = document.getElementById('filterMode').value || null;
-        const from = document.getElementById('fromDate').value || null;
-        const to = document.getElementById('toDate').value || null;
-
         const tasks = [];
-        if (!type || type === 'client_payments') tasks.push(fetchTable('client_payments', 'payment_date', 'client_name', siteId, from, to, mode));
-        if (!type || type === 'expense_transactions') tasks.push(fetchTable('expense_transactions', 'transaction_date', 'party_name_snapshot', siteId, from, to, mode));
-        if (!type || type === 'contractor_payments') tasks.push(fetchTable('contractor_payments', 'payment_date', 'contractor_name_snapshot', siteId, from, to, mode));
-        if (!type || type === 'labour_payments') tasks.push(fetchTable('labour_payments', 'payment_date', 'labour_name_snapshot', siteId, from, to, mode));
-
+        Object.entries(TABLE_META).forEach(([table, meta]) => {
+          if (!type || type === table) tasks.push(fetchTable(table, meta.dateCol, meta.nameCol));
+        });
         const results = (await Promise.all(tasks)).flat();
         results.sort((a, b) => new Date(b.date) - new Date(a.date));
         currentRows = results;
-
-        const siteMap = Object.fromEntries(sites.map(s => [s.id, s.site_name]));
-        const body = document.getElementById('reportBody');
-        body.innerHTML = results.length ? results.map(r => `
-          <tr>
-            <td>${formatDate(r.date)}</td>
-            <td>${TYPE_LABELS[r.type]}</td>
-            <td>${r.party}</td>
-            <td>${siteMap[r.site_id] || ''}</td>
-            <td>${r.mode || ''}</td>
-            <td style="text-align:right;">${formatINR(r.amount)}</td>
-          </tr>`).join('') : `<tr><td colspan="6" class="text-sm text-muted">No records match these filters.</td></tr>`;
+        const sm = siteMapOf();
 
         const total = results.reduce((s, r) => s + r.amount, 0);
         const cash = results.filter(r => r.mode === 'Cash').reduce((s, r) => s + r.amount, 0);
         const online = results.filter(r => r.mode === 'Online').reduce((s, r) => s + r.amount, 0);
-        document.getElementById('totRecords').textContent = results.length;
-        document.getElementById('totAmount').textContent = formatINR(total);
-        document.getElementById('totCash').textContent = formatINR(cash);
-        document.getElementById('totOnline').textContent = formatINR(online);
+        renderStatGrid([
+          { label: 'Total Records', value: results.length },
+          { label: 'Total Amount', value: formatINR(total) },
+          { label: 'Cash Total', value: formatINR(cash) },
+          { label: 'Online Total', value: formatINR(online) },
+        ]);
+        renderTable(results, [
+          { label: 'Date', render: r => formatDate(r.date) },
+          { label: 'Type', render: r => TYPE_LABELS[r.type] },
+          { label: 'Party', render: r => r.party },
+          { label: 'Site', render: r => sm[r.site_id] || '' },
+          { label: 'Mode', render: r => r.mode || '' },
+          { label: 'Amount', right: true, render: r => formatINR(r.amount) },
+        ]);
+      }
+
+      async function runPartyReport() {
+        const type = document.getElementById('partyType').value;
+        const name = document.getElementById('partyNameInput').value.trim();
+        const meta = PARTY_TABLE[type];
+        const headerCard = document.getElementById('partyHeaderCard');
+        if (!name) {
+          headerCard.classList.add('hidden');
+          currentRows = [];
+          renderStatGrid([]);
+          renderTable([], [{ label: 'Date', render: () => '' }]);
+          document.getElementById('reportBody').innerHTML = `<tr><td class="text-sm text-muted">Type a ${type.toLowerCase()} name above to see their full history.</td></tr>`;
+          return;
+        }
+        const rows = await fetchTable(meta.table, meta.dateCol, meta.nameCol, {
+          // match by exact name (party names are unique per type) rather than site/mode filters here —
+          // a party's ledger should show their full history regardless of site.
+          siteId: document.getElementById('filterSite').value || null,
+        });
+        const filtered = rows.filter(r => (r.party || '').trim().toLowerCase() === name.toLowerCase());
+        filtered.sort((a, b) => new Date(a.date) - new Date(b.date)); // chronological for a ledger
+        currentRows = filtered;
+        const sm = siteMapOf();
+
+        const total = filtered.reduce((s, r) => s + r.amount, 0);
+        const cash = filtered.filter(r => r.mode === 'Cash').reduce((s, r) => s + r.amount, 0);
+        const online = filtered.filter(r => r.mode === 'Online').reduce((s, r) => s + r.amount, 0);
+        const pending = filtered.filter(r => r.status === 'Pending').length;
+
+        headerCard.classList.remove('hidden');
+        headerCard.innerHTML = `
+          <div class="site-tag" style="margin-bottom:8px;">${type}</div>
+          <div style="font-family:var(--font-display);font-weight:700;font-size:22px;margin-bottom:10px;">${name}</div>
+          <div class="stat-row"><span>Total transactions</span><strong>${filtered.length}</strong></div>
+          <div class="stat-row"><span>First transaction</span><strong>${filtered[0] ? formatDate(filtered[0].date) : '—'}</strong></div>
+          <div class="stat-row"><span>Last transaction</span><strong>${filtered.length ? formatDate(filtered[filtered.length - 1].date) : '—'}</strong></div>
+          ${pending ? `<div class="stat-row"><span>Pending entries</span><strong style="color:var(--amber-dark)">${pending}</strong></div>` : ''}
+        `;
+        renderStatGrid([
+          { label: 'Total Amount', value: formatINR(total) },
+          { label: 'Cash', value: formatINR(cash) },
+          { label: 'Online', value: formatINR(online) },
+          { label: 'Entries', value: filtered.length },
+        ]);
+        renderTable(filtered, [
+          { label: 'Date', render: r => formatDate(r.date) },
+          { label: 'Site', render: r => sm[r.site_id] || '' },
+          { label: 'Mode', render: r => r.mode || '' },
+          { label: 'Status', render: r => r.status || '' },
+          { label: 'Amount', right: true, render: r => formatINR(r.amount) },
+        ]);
+      }
+
+      async function runSiteReport() {
+        const { data, error } = await supabase.rpc('site_summary_full');
+        if (error) { console.error(error); return; }
+        currentRows = data || [];
+        document.getElementById('siteBody').innerHTML = (data || []).map(r => `
+          <tr>
+            <td><span class="site-tag">${r.site_name}</span></td>
+            <td>${formatINR(r.client_total)}</td>
+            <td>${formatINR(r.expense_total)}</td>
+            <td>${formatINR(r.contractor_total)}</td>
+            <td>${formatINR(r.labour_total)}</td>
+            <td>${formatINR(Number(r.client_cash) + Number(r.expense_cash) + Number(r.contractor_cash) + Number(r.labour_cash))}</td>
+            <td>${formatINR(Number(r.client_online) + Number(r.expense_online) + Number(r.contractor_online) + Number(r.labour_online))}</td>
+            <td>${formatINR(r.gst_total)}</td>
+          </tr>`).join('') || `<tr><td colspan="8" class="text-sm text-muted">No sites yet.</td></tr>`;
+      }
+
+      async function runPendingReport() {
+        const meta3 = [
+          ['expense_transactions', 'transaction_date', 'party_name_snapshot'],
+          ['contractor_payments', 'payment_date', 'contractor_name_snapshot'],
+          ['labour_payments', 'payment_date', 'labour_name_snapshot'],
+        ];
+        const tasks = meta3.map(([table, dateCol, nameCol]) => fetchTable(table, dateCol, nameCol, { eq: { payment_status: 'Pending' }, mode: null }));
+        const results = (await Promise.all(tasks)).flat();
+        results.sort((a, b) => new Date(b.date) - new Date(a.date));
+        currentRows = results;
+        const sm = siteMapOf();
+        const total = results.reduce((s, r) => s + r.amount, 0);
+        renderStatGrid([
+          { label: 'Pending Entries', value: results.length },
+          { label: 'Total Pending', value: formatINR(total) },
+        ]);
+        renderTable(results, [
+          { label: 'Date', render: r => formatDate(r.date) },
+          { label: 'Type', render: r => TYPE_LABELS[r.type] },
+          { label: 'Party', render: r => r.party },
+          { label: 'Site', render: r => sm[r.site_id] || '' },
+          { label: 'Amount', right: true, render: r => formatINR(r.amount) },
+        ]);
+      }
+
+      async function runGstReport() {
+        const rows = await fetchTable('client_payments', 'payment_date', 'client_name', { eq: { gst_applicable: true }, mode: null });
+        rows.sort((a, b) => new Date(b.date) - new Date(a.date));
+        currentRows = rows;
+        const sm = siteMapOf();
+        const gstTotal = rows.reduce((s, r) => s + Number(r.raw.gst_amount || 0), 0);
+        const baseTotal = rows.reduce((s, r) => s + r.amount, 0);
+        renderStatGrid([
+          { label: 'GST Entries', value: rows.length },
+          { label: 'Total GST', value: formatINR(gstTotal) },
+          { label: 'Total Receipt Amount', value: formatINR(baseTotal) },
+        ]);
+        renderTable(rows, [
+          { label: 'Date', render: r => formatDate(r.date) },
+          { label: 'Client', render: r => r.party },
+          { label: 'Site', render: r => sm[r.site_id] || '' },
+          { label: 'Amount', right: true, render: r => formatINR(r.amount) },
+          { label: 'GST', right: true, render: r => formatINR(r.raw.gst_amount) },
+        ]);
       }
 
       function exportExcel() {
-        const siteMap = Object.fromEntries(sites.map(s => [s.id, s.site_name]));
-        const rows = currentRows.map(r => ({
-          Date: r.date, Type: TYPE_LABELS[r.type], Party: r.party,
-          Site: siteMap[r.site_id] || '', Mode: r.mode || '', Amount: r.amount
+        if (currentType === 'site') {
+          const rows = (currentRows || []).map(r => ({
+            Site: r.site_name, 'Client Receipts': r.client_total, Expenses: r.expense_total,
+            Contractor: r.contractor_total, Labour: r.labour_total,
+            Cash: Number(r.client_cash) + Number(r.expense_cash) + Number(r.contractor_cash) + Number(r.labour_cash),
+            Online: Number(r.client_online) + Number(r.expense_online) + Number(r.contractor_online) + Number(r.labour_online),
+            GST: r.gst_total,
+          }));
+          const ws = XLSX.utils.json_to_sheet(rows);
+          const wb = XLSX.utils.book_new();
+          XLSX.utils.book_append_sheet(wb, ws, 'Site Summary');
+          XLSX.writeFile(wb, `finance-hub-site-summary-${new Date().toISOString().slice(0,10)}.xlsx`);
+          return;
+        }
+        const sm = siteMapOf();
+        const rows = (currentRows || []).map(r => ({
+          Date: r.date, Type: TYPE_LABELS[r.type] || currentType, Party: r.party,
+          Site: sm[r.site_id] || '', Mode: r.mode || '', Amount: r.amount,
+          ...(currentType === 'gst' ? { GST: r.raw.gst_amount } : {}),
         }));
         const ws = XLSX.utils.json_to_sheet(rows);
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, 'Report');
-        XLSX.writeFile(wb, `finance-hub-report-${new Date().toISOString().slice(0,10)}.xlsx`);
+        XLSX.writeFile(wb, `finance-hub-${currentType}-report-${new Date().toISOString().slice(0,10)}.xlsx`);
       }
 
-      loadReport();
+      switchReportType('list');
+
+      // Deep link support: reports.html?type=party&partyType=Client&party=Name
+      const params = new URLSearchParams(location.search);
+      if (params.get('type') === 'party') {
+        document.getElementById('partyType').value = params.get('partyType') || 'Client';
+        document.getElementById('partyNameInput').value = params.get('party') || '';
+        switchReportType('party');
+      }
     })();
   </script>
 </body>

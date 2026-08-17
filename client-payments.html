@@ -96,7 +96,7 @@
   <script type="module">
     import {
       requireAuth, supabase, renderChrome, renderSubNav, currentSiteId, getSites,
-      formatINR, formatDate, todayISO, showBanner, debounce, logAudit, findOrCreateParty
+      formatINR, formatDate, todayISO, showBanner, debounce, logAudit, findOrCreateParty, archiveRecord
     } from './assets/app.js';
 
     let auth, sites;
@@ -224,7 +224,19 @@
               </div>
             </div>
             <div class="txn-amount"><div class="amt credit">${formatINR(t.amount)}</div>${t.gst_applicable ? `<div class="text-sm text-muted">GST ${formatINR(t.gst_amount)}</div>` : ''}</div>
+          </div>
+          <div class="txn-actions">
+            <a class="txn-action-link" href="reports.html?type=party&partyType=Client&party=${encodeURIComponent(t.client_name)}">History</a>
+            <button class="txn-action-link archive-btn" data-id="${t.id}">Archive</button>
           </div>`).join('');
+
+        listCard.querySelectorAll('.archive-btn').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            if (!confirm('Archive this receipt? It will no longer show in lists or totals, but stays in the database and can be restored by a Super Admin if needed.')) return;
+            const ok = await archiveRecord('client_payments', btn.dataset.id);
+            if (ok) loadList(); else showBanner(banner, 'Could not archive this record.', 'error');
+          });
+        });
       }
 
       [filterSite, document.getElementById('filterMode'), document.getElementById('filterRange')]

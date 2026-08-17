@@ -58,7 +58,7 @@
   <script type="module">
     import {
       requireAuth, supabase, renderChrome, renderSubNav, currentSiteId, getSites,
-      formatINR, formatDate, todayISO, showBanner, debounce, logAudit, findOrCreateParty
+      formatINR, formatDate, todayISO, showBanner, debounce, logAudit, findOrCreateParty, archiveRecord
     } from './assets/app.js';
 
     const TABLE = 'labour_payments';
@@ -156,7 +156,19 @@
               </div>
             </div>
             <div class="txn-amount"><div class="amt debit">${formatINR(t.amount)}</div></div>
+          </div>
+          <div class="txn-actions">
+            <a class="txn-action-link" href="reports.html?type=party&partyType=Labour&party=${encodeURIComponent(t.labour_name_snapshot)}">History</a>
+            <button class="txn-action-link archive-btn" data-id="${t.id}">Archive</button>
           </div>`).join('');
+
+        listCard.querySelectorAll('.archive-btn').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            if (!confirm('Archive this payment? It will no longer show in lists or totals, but stays in the database.')) return;
+            const ok = await archiveRecord(TABLE, btn.dataset.id);
+            if (ok) loadList(); else showBanner(banner, 'Could not archive this record.', 'error');
+          });
+        });
       }
       [document.getElementById('filterSite'), document.getElementById('filterMode')].forEach(el => el.addEventListener('change', loadList));
       document.getElementById('searchBox').addEventListener('input', debounce(loadList, 300));

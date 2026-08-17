@@ -66,7 +66,7 @@
   <script type="module">
     import {
       requireAuth, supabase, renderChrome, renderSubNav, currentSiteId, getSites,
-      formatINR, formatDate, todayISO, showBanner, debounce, logAudit, findOrCreateParty
+      formatINR, formatDate, todayISO, showBanner, debounce, logAudit, findOrCreateParty, archiveRecord
     } from './assets/app.js';
 
     let auth, sites;
@@ -166,7 +166,19 @@
               </div>
             </div>
             <div class="txn-amount"><div class="amt debit">${formatINR(t.amount)}</div></div>
+          </div>
+          <div class="txn-actions">
+            ${t.party_name_snapshot ? `<a class="txn-action-link" href="reports.html?type=party&partyType=Supplier&party=${encodeURIComponent(t.party_name_snapshot)}">History</a>` : ''}
+            <button class="txn-action-link archive-btn" data-id="${t.id}">Archive</button>
           </div>`).join('');
+
+        listCard.querySelectorAll('.archive-btn').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            if (!confirm('Archive this expense? It will no longer show in lists or totals, but stays in the database.')) return;
+            const ok = await archiveRecord('expense_transactions', btn.dataset.id);
+            if (ok) loadList(); else showBanner(banner, 'Could not archive this record.', 'error');
+          });
+        });
       }
       [document.getElementById('filterSite'), document.getElementById('filterMode')].forEach(el => el.addEventListener('change', loadList));
       document.getElementById('searchBox').addEventListener('input', debounce(loadList, 300));

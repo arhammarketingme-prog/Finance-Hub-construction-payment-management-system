@@ -160,6 +160,27 @@ export async function logAudit(action, table, recordId, details = {}) {
   });
 }
 
+// ---------- Pagination-safe fetch (PostgREST caps a single response at 1000 rows) ----------
+export async function fetchAllRows(buildQuery) {
+  const PAGE = 1000;
+  let page = 0, all = [];
+  while (true) {
+    const { data, error } = await buildQuery(page * PAGE, page * PAGE + PAGE - 1);
+    if (error) { console.error(error); break; }
+    all = all.concat(data || []);
+    if (!data || data.length < PAGE) break;
+    page++;
+  }
+  return all;
+}
+
+// ---------- Soft delete / archive (spec: never hard-delete financial records) ----------
+export async function archiveRecord(table, id) {
+  const { error } = await supabase.from(table).update({ status: 'archived' }).eq('id', id);
+  if (!error) await logAudit('archive', table, id, {});
+  return !error;
+}
+
 // ---------- Small UI helpers ----------
 export function showBanner(el, message, type = 'info') {
   el.className = `banner ${type}`;
