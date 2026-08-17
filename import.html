@@ -285,40 +285,60 @@
 
     async function validateAndDedupe() {
       document.getElementById('step3').classList.remove('hidden');
+      const banner = document.getElementById('banner');
+      showBanner(banner, `Checking ${parsedRows.length} rows against existing records…`, 'info');
+
       let valid = 0, warn = 0, dup = 0, invalid = 0, totalAmount = 0;
       const results = [];
 
-      for (const row of parsedRows) {
-        const site = siteByName[(row.site_name || '').toLowerCase()];
-        const isoDate = excelDateToISO(row.transaction_date_raw);
-        const amount = num(row.amount_raw);
+      try {
+        // Bulk-fetch existing imported rows for the sheets involved, once —
+        // instead of one DB round-trip per row (which is what silently failed
+        // on large files before).
+        const sheetNames = [...new Set(parsedRows.map(r => r.source_sheet))];
+        const { data: existingRows, error: fetchErr } = await supabase
+          .from('expense_transactions')
+          .select('source_sheet, source_row, site_id, transaction_date, amount, party_name_snapshot')
+          .eq('source_type', 'import')
+          .in('source_sheet', sheetNames);
+        if (fetchErr) throw fetchErr;
 
-        let status = 'ok', reason = '';
-        if (!site) { status = 'bad'; reason = 'Site Mapping Error'; }
-        else if (!isoDate) { status = 'bad'; reason = 'Invalid Date'; }
-        else if (amount === null) { status = 'bad'; reason = 'Amount Missing'; }
-        else if (isNaN(amount) || amount <= 0) { status = 'bad'; reason = 'Invalid Amount'; }
+        const dupKey = (sheet, row, siteId, date, amt, party) =>
+          [sheet, row, siteId, date, Number(amt).toFixed(2), (party || '').trim()].join('|');
+        const existingKeys = new Set(
+          (existingRows || []).map(r => dupKey(r.source_sheet, r.source_row, r.site_id, r.transaction_date, r.amount, r.party_name_snapshot))
+        );
 
-        if (status === 'ok') {
-          // duplicate check against DB
-          const { data: existing } = await supabase.from('expense_transactions')
-            .select('id')
-            .eq('source_sheet', row.source_sheet)
-            .eq('source_row', row.source_row)
-            .eq('site_id', site.id)
-            .eq('transaction_date', isoDate)
-            .eq('amount', amount)
-            .maybeSingle();
-          if (existing) { status = 'dup'; reason = 'Duplicate – Skipped'; }
+        for (const row of parsedRows) {
+          const site = siteByName[(row.site_name || '').toLowerCase()];
+          const isoDate = excelDateToISO(row.transaction_date_raw);
+          const amount = num(row.amount_raw);
+
+          let status = 'ok', reason = '';
+          if (!site) { status = 'bad'; reason = 'Site Mapping Error'; }
+          else if (!isoDate) { status = 'bad'; reason = 'Invalid Date'; }
+          else if (amount === null) { status = 'bad'; reason = 'Amount Missing'; }
+          else if (isNaN(amount) || amount <= 0) { status = 'bad'; reason = 'Invalid Amount'; }
+
+          if (status === 'ok') {
+            const key = dupKey(row.source_sheet, row.source_row, site.id, isoDate, amount, row.party_name);
+            if (existingKeys.has(key)) { status = 'dup'; reason = 'Duplicate – Skipped'; }
+          }
+          if (status === 'ok' && !row.payment_mode) { status = 'warn'; reason = 'Payment mode not specified'; }
+
+          if (status === 'ok') { valid++; totalAmount += amount; }
+          else if (status === 'warn') { valid++; totalAmount += amount; warn++; }
+          else if (status === 'dup') dup++;
+          else invalid++;
+
+          results.push({ ...row, site, isoDate, amount, status, reason });
         }
-        if (status === 'ok' && !row.payment_mode) { status = 'warn'; reason = 'Payment mode not specified'; }
 
-        if (status === 'ok') { valid++; totalAmount += amount; }
-        else if (status === 'warn') { valid++; totalAmount += amount; warn++; }
-        else if (status === 'dup') dup++;
-        else invalid++;
-
-        results.push({ ...row, site, isoDate, amount, status, reason });
+        banner.classList.add('hidden');
+      } catch (err) {
+        showBanner(banner, `Could not validate rows: ${err.message || err}. Nothing has been imported yet — fix the issue and re-select the file.`, 'error');
+        window.__importResults = [];
+        return;
       }
 
       document.getElementById('cValid').textContent = valid;
@@ -343,17 +363,29 @@
 
     async function runImport() {
       const btn = document.getElementById('confirmImportBtn');
-      btn.disabled = true; btn.textContent = 'Importing…';
+      btn.disabled = true;
+      const banner = document.getElementById('banner');
       const results = window.__importResults || [];
       let imported = 0, duplicate = 0, invalid = 0, total = 0;
       const bySite = {}, bySheet = {};
 
+      // Resolve each unique supplier name to a party only once (not once per row —
+      // the same supplier can appear hundreds of times in a year of expenses).
+      const partyCache = new Map();
+      async function resolveParty(name) {
+        if (!name) return null;
+        if (partyCache.has(name)) return partyCache.get(name);
+        const p = await findOrCreateParty(name, 'Supplier');
+        partyCache.set(name, p);
+        return p;
+      }
+
+      const toInsert = [];
       for (const r of results) {
         if (r.status === 'dup') { duplicate++; continue; }
         if (r.status === 'bad') { invalid++; continue; }
-
-        const party = r.party_name ? await findOrCreateParty(r.party_name, 'Supplier') : null;
-        const payload = {
+        const party = await resolveParty(r.party_name);
+        toInsert.push({
           site_id: r.site.id,
           transaction_date: r.isoDate,
           description: r.description,
@@ -372,13 +404,28 @@
           source_row: r.source_row,
           source_type: 'import',
           created_by: auth.profile.id,
-        };
-        const { error } = await supabase.from('expense_transactions').insert(payload);
-        if (error) { invalid++; continue; }
-        imported++; total += r.amount;
-        bySite[r.site.site_name] = (bySite[r.site.site_name] || 0) + r.amount;
-        bySheet[r.source_sheet] = (bySheet[r.source_sheet] || 0) + r.amount;
+          __site_name: r.site.site_name,
+          __amount: r.amount,
+        });
       }
+
+      const BATCH_SIZE = 250;
+      for (let i = 0; i < toInsert.length; i += BATCH_SIZE) {
+        const batch = toInsert.slice(i, i + BATCH_SIZE).map(({ __site_name, __amount, ...rest }) => rest);
+        showBanner(banner, `Importing ${Math.min(i + BATCH_SIZE, toInsert.length)} of ${toInsert.length} rows…`, 'info');
+        const { error } = await supabase.from('expense_transactions').insert(batch);
+        if (error) {
+          invalid += batch.length;
+          console.error('Batch insert failed:', error);
+          continue;
+        }
+        toInsert.slice(i, i + BATCH_SIZE).forEach(r => {
+          imported++; total += r.__amount;
+          bySite[r.__site_name] = (bySite[r.__site_name] || 0) + r.__amount;
+          bySheet[r.source_sheet] = (bySheet[r.source_sheet] || 0) + r.__amount;
+        });
+      }
+      banner.classList.add('hidden');
 
       await supabase.from('import_runs').insert({
         file_name: document.getElementById('fileInput').files[0]?.name || null,
