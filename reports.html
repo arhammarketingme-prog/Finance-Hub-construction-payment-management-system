@@ -83,14 +83,25 @@
       document.getElementById('exportPdfBtn').addEventListener('click', () => window.print());
 
       async function fetchTable(table, dateCol, nameField, siteId, from, to, mode) {
-        let q = supabase.from(table).select('*').eq('status', 'active');
-        if (siteId) q = q.eq('site_id', siteId);
-        if (from) q = q.gte(dateCol, from);
-        if (to) q = q.lte(dateCol, to);
-        if (mode) q = q.eq('payment_mode', mode);
-        const { data, error } = await q;
-        if (error) { console.error(error); return []; }
-        return data.map(r => ({
+        // PostgREST caps a single response at 1000 rows, so page through with
+        // .range() until a page comes back short — otherwise totals silently
+        // undercount once a table holds more than 1000 matching rows.
+        const PAGE = 1000;
+        let page = 0, all = [];
+        while (true) {
+          let q = supabase.from(table).select('*').eq('status', 'active');
+          if (siteId) q = q.eq('site_id', siteId);
+          if (from) q = q.gte(dateCol, from);
+          if (to) q = q.lte(dateCol, to);
+          if (mode) q = q.eq('payment_mode', mode);
+          q = q.range(page * PAGE, page * PAGE + PAGE - 1);
+          const { data, error } = await q;
+          if (error) { console.error(error); break; }
+          all = all.concat(data);
+          if (data.length < PAGE) break;
+          page++;
+        }
+        return all.map(r => ({
           date: r[dateCol],
           type: table,
           party: r[nameField] || '—',

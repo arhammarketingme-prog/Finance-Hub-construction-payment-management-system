@@ -335,6 +335,49 @@ create policy "attachments bucket read" on storage.objects
 create policy "attachments bucket write" on storage.objects
   for insert with check (bucket_id = 'attachments' and auth.role() = 'authenticated');
 
+-- ------------------------------------------------------------
+-- 16. AGGREGATE FUNCTIONS (dashboard/site totals)
+-- ------------------------------------------------------------
+-- IMPORTANT: PostgREST (Supabase's REST layer) caps any plain SELECT at 1000 rows
+-- by default. Once a table holds more than ~1000 active rows, summing on the
+-- client by fetching all rows silently undercounts. These functions do the sum
+-- in the database instead, so totals are always correct regardless of row count.
+-- They run as SECURITY INVOKER (the default), so each caller's RLS site-scoping
+-- still applies automatically.
+
+create or replace function public.dashboard_summary(p_site_id uuid default null)
+returns table (
+  client_total numeric, client_cash numeric, client_online numeric, gst_total numeric,
+  expense_total numeric, expense_cash numeric, expense_online numeric,
+  contractor_total numeric, contractor_cash numeric, contractor_online numeric,
+  labour_total numeric, labour_cash numeric, labour_online numeric
+)
+language sql stable as $$
+  select
+    coalesce((select sum(amount) from client_payments where status='active' and (p_site_id is null or site_id=p_site_id)),0),
+    coalesce((select sum(amount) from client_payments where status='active' and payment_mode='Cash' and (p_site_id is null or site_id=p_site_id)),0),
+    coalesce((select sum(amount) from client_payments where status='active' and payment_mode='Online' and (p_site_id is null or site_id=p_site_id)),0),
+    coalesce((select sum(gst_amount) from client_payments where status='active' and gst_applicable=true and (p_site_id is null or site_id=p_site_id)),0),
+    coalesce((select sum(amount) from expense_transactions where status='active' and (p_site_id is null or site_id=p_site_id)),0),
+    coalesce((select sum(amount) from expense_transactions where status='active' and payment_mode='Cash' and (p_site_id is null or site_id=p_site_id)),0),
+    coalesce((select sum(amount) from expense_transactions where status='active' and payment_mode='Online' and (p_site_id is null or site_id=p_site_id)),0),
+    coalesce((select sum(amount) from contractor_payments where status='active' and (p_site_id is null or site_id=p_site_id)),0),
+    coalesce((select sum(amount) from contractor_payments where status='active' and payment_mode='Cash' and (p_site_id is null or site_id=p_site_id)),0),
+    coalesce((select sum(amount) from contractor_payments where status='active' and payment_mode='Online' and (p_site_id is null or site_id=p_site_id)),0),
+    coalesce((select sum(amount) from labour_payments where status='active' and (p_site_id is null or site_id=p_site_id)),0),
+    coalesce((select sum(amount) from labour_payments where status='active' and payment_mode='Cash' and (p_site_id is null or site_id=p_site_id)),0),
+    coalesce((select sum(amount) from labour_payments where status='active' and payment_mode='Online' and (p_site_id is null or site_id=p_site_id)),0);
+$$;
+
+create or replace function public.site_summary()
+returns table (site_id uuid, site_name text, total_receipts numeric, total_expenses numeric)
+language sql stable as $$
+  select s.id, s.site_name,
+    coalesce((select sum(amount) from client_payments where status='active' and site_id=s.id),0),
+    coalesce((select sum(amount) from expense_transactions where status='active' and site_id=s.id),0)
+  from public.sites s where s.status='active' order by s.site_name;
+$$;
+
 -- ============================================================
 -- END OF SCHEMA
 -- After running this:

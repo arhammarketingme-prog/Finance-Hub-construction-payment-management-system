@@ -58,67 +58,46 @@
       await renderChrome({ activeNav: 'dashboard' });
 
       const siteId = currentSiteId();
-      const siteFilter = (q) => siteId === 'all' ? q : q.eq('site_id', siteId);
+      const rpcSiteId = siteId === 'all' ? null : siteId;
 
-      async function sumTable(table, dateCol) {
-        let q = supabase.from(table).select('amount, payment_mode, site_id').eq('status', 'active');
-        q = siteFilter(q);
-        const { data, error } = await q;
-        if (error) { console.error(error); return { total: 0, cash: 0, online: 0, rows: [] }; }
-        let total = 0, cash = 0, online = 0;
-        data.forEach(r => {
-          total += Number(r.amount);
-          if (r.payment_mode === 'Cash') cash += Number(r.amount);
-          if (r.payment_mode === 'Online') online += Number(r.amount);
-        });
-        return { total, cash, online, rows: data };
-      }
-
-      const [clientR, expenseR, contractorR, labourR] = await Promise.all([
-        sumTable('client_payments'), sumTable('expense_transactions'),
-        sumTable('contractor_payments'), sumTable('labour_payments')
-      ]);
+      const { data: sum, error: sumErr } = await supabase.rpc('dashboard_summary', { p_site_id: rpcSiteId });
+      const s = (sum && sum[0]) || {
+        client_total: 0, client_cash: 0, client_online: 0, gst_total: 0,
+        expense_total: 0, expense_cash: 0, expense_online: 0,
+        contractor_total: 0, contractor_cash: 0, contractor_online: 0,
+        labour_total: 0, labour_cash: 0, labour_online: 0
+      };
+      if (sumErr) console.error(sumErr);
 
       const grid = document.getElementById('summaryGrid');
-      const cashTotal = clientR.cash - expenseR.cash - contractorR.cash - labourR.cash;
-      const onlineTotal = clientR.online - expenseR.online - contractorR.online - labourR.online;
+      const cashTotal = Number(s.client_cash) - Number(s.expense_cash) - Number(s.contractor_cash) - Number(s.labour_cash);
+      const onlineTotal = Number(s.client_online) - Number(s.expense_online) - Number(s.contractor_online) - Number(s.labour_online);
       grid.innerHTML = `
-        <div class="summary-card receipts"><div class="label">Client Receipts</div><div class="value">${formatINR(clientR.total)}</div></div>
-        <div class="summary-card expenses"><div class="label">Expenses</div><div class="value">${formatINR(expenseR.total)}</div></div>
-        <div class="summary-card contractor"><div class="label">Contractor</div><div class="value">${formatINR(contractorR.total)}</div></div>
-        <div class="summary-card labour"><div class="label">Labour</div><div class="value">${formatINR(labourR.total)}</div></div>
+        <div class="summary-card receipts"><div class="label">Client Receipts</div><div class="value">${formatINR(s.client_total)}</div></div>
+        <div class="summary-card expenses"><div class="label">Expenses</div><div class="value">${formatINR(s.expense_total)}</div></div>
+        <div class="summary-card contractor"><div class="label">Contractor</div><div class="value">${formatINR(s.contractor_total)}</div></div>
+        <div class="summary-card labour"><div class="label">Labour</div><div class="value">${formatINR(s.labour_total)}</div></div>
         <div class="summary-card"><div class="label">Cash Balance</div><div class="value">${formatINR(cashTotal)}</div></div>
         <div class="summary-card"><div class="label">Online Balance</div><div class="value">${formatINR(onlineTotal)}</div></div>
       `;
 
-      // GST summary
-      let gq = supabase.from('client_payments').select('gst_amount, gst_applicable').eq('status', 'active').eq('gst_applicable', true);
-      gq = siteFilter(gq);
-      const { data: gstRows } = await gq;
-      const gstTotal = (gstRows || []).reduce((s, r) => s + Number(r.gst_amount || 0), 0);
       document.getElementById('gstSummary').innerHTML =
-        `<div class="flex between"><span>GST collected (client receipts)</span><strong>${formatINR(gstTotal)}</strong></div>`;
+        `<div class="flex between"><span>GST collected (client receipts)</span><strong>${formatINR(s.gst_total)}</strong></div>`;
 
-      // Site-wise summary
-      const sites = await getSites();
-      const siteRows = await Promise.all(sites.map(async s => {
-        const { data: cp } = await supabase.from('client_payments').select('amount').eq('status', 'active').eq('site_id', s.id);
-        const { data: ex } = await supabase.from('expense_transactions').select('amount').eq('status', 'active').eq('site_id', s.id);
-        const recv = (cp || []).reduce((a, r) => a + Number(r.amount), 0);
-        const exp = (ex || []).reduce((a, r) => a + Number(r.amount), 0);
-        return { name: s.site_name, recv, exp };
-      }));
-      document.getElementById('siteSummary').innerHTML = siteRows.length
-        ? siteRows.map(s => `
+      // Site-wise summary (computed in the DB, so it's accurate no matter how many rows exist)
+      const { data: siteRows, error: siteErr } = await supabase.rpc('site_summary');
+      if (siteErr) console.error(siteErr);
+      document.getElementById('siteSummary').innerHTML = (siteRows && siteRows.length)
+        ? siteRows.map(r => `
           <div class="flex between" style="padding:6px 0;">
-            <span class="site-tag">${s.name}</span>
-            <span class="text-sm"><span style="color:var(--receipt)">${formatINR(s.recv)}</span> · <span style="color:var(--expense)">${formatINR(s.exp)}</span></span>
+            <span class="site-tag">${r.site_name}</span>
+            <span class="text-sm"><span style="color:var(--receipt)">${formatINR(r.total_receipts)}</span> · <span style="color:var(--expense)">${formatINR(r.total_expenses)}</span></span>
           </div>`).join('')
         : '<div class="text-sm text-muted">No sites yet.</div>';
 
       // Recent transactions (merged, most recent 8)
       let rt = supabase.from('client_payments').select('id, client_name, amount, payment_date, payment_mode, site_id').eq('status', 'active').order('payment_date', { ascending: false }).limit(8);
-      rt = siteFilter(rt);
+      if (rpcSiteId) rt = rt.eq('site_id', rpcSiteId);
       const { data: recent } = await rt;
       const recentEl = document.getElementById('recentTxns');
       if (!recent || recent.length === 0) {
