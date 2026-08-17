@@ -34,13 +34,12 @@ create table if not exists public.profiles (
 );
 
 -- Which sites a user can see. Empty for super_admin = all sites (checked in app logic).
+-- NOTE: the FK to sites is added later (section 12), after the sites table exists.
 create table if not exists public.user_site_access (
   user_id  uuid not null references public.profiles(id) on delete cascade,
-  site_id  uuid not null references public.sites(id) on delete cascade,
+  site_id  uuid not null,
   primary key (user_id, site_id)
 );
--- NOTE: sites table is created below, so this line runs after it (see reorder at bottom)
--- (kept here for readability — actual creation order is fixed further down)
 
 -- ------------------------------------------------------------
 -- 3. SITES
