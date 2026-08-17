@@ -96,6 +96,34 @@
       return null;
     }
 
+    function findHeaderRowIdx(grid, maxScan = 10) {
+      for (let i = 0; i < Math.min(maxScan, grid.length); i++) {
+        const row = grid[i] || [];
+        if (row.some(c => c && String(c).trim().toLowerCase() === 'date')) return i;
+      }
+      return -1;
+    }
+    function buildColIndex(headerRow) {
+      const idx = {};
+      (headerRow || []).forEach((h, i) => {
+        if (h !== null && h !== undefined) {
+          const key = String(h).trim().toLowerCase();
+          if (key && !(key in idx)) idx[key] = i; // keep first occurrence
+        }
+      });
+      return idx;
+    }
+    function getByNames(row, colIndex, names) {
+      for (const n of names) {
+        const key = n.toLowerCase();
+        if (key in colIndex) {
+          const v = row[colIndex[key]];
+          if (v !== null && v !== undefined && v !== '') return v;
+        }
+      }
+      return null;
+    }
+
     function num(val) {
       if (val === null || val === undefined || val === '') return null;
       const n = Number(String(val).replace(/[,₹\s]/g, ''));
@@ -135,65 +163,84 @@
     }
 
     function parseExpenseSheet(sheet, sheetName, siteName) {
-      const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
+      const grid = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null });
+      const headerIdx = findHeaderRowIdx(grid);
+      if (headerIdx === -1) return [];
+      const colIndex = buildColIndex(grid[headerIdx]);
       const out = [];
-      rows.forEach((r, idx) => {
-        const get = (...keys) => { for (const k of keys) { if (r[k] !== undefined) return r[k]; } return null; };
+      let blankRun = 0;
+      for (let dr = headerIdx + 1; dr < grid.length; dr++) {
+        const row = grid[dr] || [];
+        const dateVal = getByNames(row, colIndex, ['date']);
+        // Some source files split "Expenses Debit" into two columns ("Expenses" holding
+        // the amount, "Debit" left blank) — check all three names, in that order.
+        const amountVal = getByNames(row, colIndex, ['expenses debit', 'expenses', 'debit']);
+        if (!dateVal && !amountVal) {
+          blankRun++;
+          if (blankRun > 15 && out.length > 0) break; // stop once we run into trailing blank padding
+          continue;
+        }
+        blankRun = 0;
         out.push({
           site_name: siteName,
-          transaction_date_raw: get('Date'),
-          description: clean(get('Description')),
-          challan_no: clean(get('Challan Nos', 'Challan No', 'Challan Nos.')),
-          party_name: clean(get('Supplier Name')),
-          material_name: clean(get('Material Name')),
-          expense_head: clean(get('Expense Head')),
-          expense_type: clean(get('Type')),
-          amount_raw: get('Expenses Debit'),
-          payment_status: clean(get('Payment Status')),
-          paid_by: clean(get('Payemnt Done by', 'Payment Done by', 'Paid By')),
-          payment_mode: normalizeMode(get('Payement Mode', 'Payment Mode')),
-          remark: clean(get('Remark')),
+          transaction_date_raw: dateVal,
+          description: clean(getByNames(row, colIndex, ['description'])),
+          challan_no: clean(getByNames(row, colIndex, ['challan nos', 'challan no', 'challan nos.'])),
+          party_name: clean(getByNames(row, colIndex, ['supplier name'])),
+          material_name: clean(getByNames(row, colIndex, ['material name'])),
+          expense_head: clean(getByNames(row, colIndex, ['expense head'])),
+          expense_type: clean(getByNames(row, colIndex, ['type'])),
+          amount_raw: amountVal,
+          payment_status: clean(getByNames(row, colIndex, ['payment status'])),
+          paid_by: clean(getByNames(row, colIndex, ['payemnt done by', 'payment done by', 'paid by'])),
+          payment_mode: normalizeMode(getByNames(row, colIndex, ['payement mode', 'payment mode'])),
+          remark: clean(getByNames(row, colIndex, ['remark'])),
           source_sheet: sheetName,
-          source_row: Number(get('S.no.', 'S.No.')) || (idx + 2),
+          source_row: dr + 1, // matches the actual Excel row number, 1-based
         });
-      });
+      }
       return out;
     }
 
     function normalizeMode(v) {
       if (!v) return null;
       const s = String(v).trim().toLowerCase();
+      if (!s) return null;
       if (s.startsWith('cash')) return 'Cash';
-      if (s.startsWith('online') || s.includes('bank') || s.includes('upi') || s.includes('neft') || s.includes('rtgs')) return 'Online';
-      return null;
+      // Only Cash and Online are valid modes (per spec) — anything else that isn't
+      // cash (bank transfer, UPI, Phone Pay, NEFT, cheque, etc.) counts as Online.
+      return 'Online';
     }
 
-    // Ankit Self Expenses: three site sections (stacked or side-by-side).
-    // Heuristic: scan raw grid for cells matching a site name; treat the next
-    // non-empty row as that section's header (Date / Amount / Type of Expense),
-    // then read rows below/right until the block ends.
+    // Ankit Self Expenses: three site sections side-by-side (Genial | Zinnia | Whispering
+    // Grooves), each its own Date/Amount/Type of Expense column block under a site-name
+    // heading. Anchors are found by scanning for the site name; each section's header
+    // window starts exactly at the anchor's own column so it never bleeds into a
+    // neighbouring section's columns.
     function parseAnkitSheet(sheet, sheetName) {
-      const grid = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: false });
+      const grid = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null });
       const siteNames = ['Genial', 'Zinnia', 'Whispering Grooves'];
       const anchors = [];
       grid.forEach((row, r) => {
-        row.forEach((cell, c) => {
-          if (cell && siteNames.some(s => String(cell).trim().toLowerCase() === s.toLowerCase())) {
-            anchors.push({ r, c, site: siteNames.find(s => s.toLowerCase() === String(cell).trim().toLowerCase()) });
+        (row || []).forEach((cell, c) => {
+          if (!cell) return;
+          const text = String(cell).trim().toLowerCase();
+          const site = siteNames.find(s => text.includes(s.toLowerCase()));
+          if (site && !anchors.some(a => a.site === site)) {
+            anchors.push({ r, c, site });
           }
         });
       });
 
       const out = [];
-      anchors.forEach((a, ai) => {
-        // find header row within next 2 rows, in a small column window from a.c
+      anchors.forEach((a) => {
         let headerRow = -1, colMap = {};
-        for (let hr = a.r; hr <= a.r + 2 && hr < grid.length; hr++) {
+        for (let hr = a.r; hr <= a.r + 3 && hr < grid.length; hr++) {
           const row = grid[hr] || [];
-          const window = row.slice(a.c, a.c + 8);
-          const dateIdx = window.findIndex(v => v && /date/i.test(v));
-          const amtIdx = window.findIndex(v => v && /amount/i.test(v));
-          const typeIdx = window.findIndex(v => v && /type/i.test(v));
+          const window = row.slice(a.c, a.c + 10);
+          const dateIdx = window.findIndex(v => v && /^date$/i.test(String(v).trim()));
+          const amtIdx = window.findIndex(v => v && /^amount/i.test(String(v).trim()));
+          const typeIdx = window.findIndex(v => v && /type/i.test(String(v).trim()));
           if (dateIdx > -1 && amtIdx > -1) {
             headerRow = hr;
             colMap = { date: a.c + dateIdx, amount: a.c + amtIdx, type: typeIdx > -1 ? a.c + typeIdx : -1 };
@@ -202,14 +249,19 @@
         }
         if (headerRow === -1) return;
 
-        // block ends at next anchor's row (if any, same or lower) else sheet end
-        const nextAnchorRow = anchors[ai + 1]?.r ?? grid.length;
-        for (let dr = headerRow + 1; dr < grid.length && dr < nextAnchorRow; dr++) {
+        // The sheet is small and entries can have long irregular gaps between them
+        // (e.g. a slow month), so scan the whole block to the end rather than
+        // stopping on a blank run.
+        for (let dr = headerRow + 1; dr < grid.length; dr++) {
           const row = grid[dr] || [];
           const dateVal = row[colMap.date];
           const amtVal = row[colMap.amount];
           const typeVal = colMap.type > -1 ? row[colMap.type] : null;
-          if (!dateVal && !amtVal) continue; // skip blank rows
+          if (!dateVal && !amtVal) continue;
+          // skip summary/total rows ("Total Recived", "Balance Payable", etc.)
+          const nearby = [row[colMap.date - 1], row[colMap.amount + 1], typeVal].filter(Boolean).join(' ').toLowerCase();
+          if (/total|balance|payable|recived|received/.test(nearby)) continue;
+
           out.push({
             site_name: a.site,
             transaction_date_raw: dateVal,
