@@ -303,10 +303,15 @@
           .in('source_sheet', sheetNames);
         if (fetchErr) throw fetchErr;
 
-        const dupKey = (sheet, row, siteId, date, amt, party) =>
-          [sheet, row, siteId, date, Number(amt).toFixed(2), (party || '').trim()].join('|');
+        const dupKey = (sheet, row, siteId, date, amt) =>
+          [sheet, row, siteId, date, Number(amt).toFixed(2)].join('|');
+        // NOTE: intentionally excludes party name from the key — a party's name text can
+        // change later (e.g. spelling auto-correction), which would otherwise make an
+        // already-imported row look "new" on a repeat import and get duplicated. The
+        // sheet + row + site + date + amount combination already uniquely identifies a
+        // specific line in the source Excel, so that alone is the correct match key.
         const existingKeys = new Set(
-          (existingRows || []).map(r => dupKey(r.source_sheet, r.source_row, r.site_id, r.transaction_date, r.amount, r.party_name_snapshot))
+          (existingRows || []).map(r => dupKey(r.source_sheet, r.source_row, r.site_id, r.transaction_date, r.amount))
         );
 
         for (const row of parsedRows) {
@@ -321,7 +326,7 @@
           else if (isNaN(amount) || amount <= 0) { status = 'bad'; reason = 'Invalid Amount'; }
 
           if (status === 'ok') {
-            const key = dupKey(row.source_sheet, row.source_row, site.id, isoDate, amount, row.party_name);
+            const key = dupKey(row.source_sheet, row.source_row, site.id, isoDate, amount);
             if (existingKeys.has(key)) { status = 'dup'; reason = 'Duplicate – Skipped'; }
           }
           if (status === 'ok' && !row.payment_mode) { status = 'warn'; reason = 'Payment mode not specified'; }

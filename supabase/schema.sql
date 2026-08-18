@@ -107,9 +107,10 @@ create index if not exists idx_expense_site  on public.expense_transactions (sit
 create index if not exists idx_expense_party on public.expense_transactions (party_id);
 create index if not exists idx_expense_mode  on public.expense_transactions (payment_mode);
 
--- Duplicate-protection helper (Part 3 §8): sheet + row + site + date + amount + description + party
+-- Duplicate-protection helper (Part 3 §8): sheet + row + site + date + amount.
+-- (Party name is intentionally NOT part of this key — see import.html for why.)
 create unique index if not exists uq_expense_import_dedupe
-  on public.expense_transactions (source_sheet, source_row, site_id, transaction_date, amount, coalesce(party_name_snapshot,''))
+  on public.expense_transactions (source_sheet, source_row, site_id, transaction_date, amount)
   where source_type = 'import';
 
 -- ------------------------------------------------------------
