@@ -32,6 +32,7 @@
         <button class="rtab" data-type="site">Site Summary</button>
         <button class="rtab" data-type="pending">Pending / Outstanding</button>
         <button class="rtab" data-type="gst">GST Summary</button>
+        <button class="rtab" data-type="ledger">Ledger</button>
       </div>
 
       <!-- shared filter card (fields shown/hidden per report type) -->
@@ -97,6 +98,9 @@
           <tbody id="siteBody"></tbody>
         </table>
       </div>
+
+      <!-- ===== Ledger (Credit vs Debit) ===== -->
+      <div class="card hidden" id="ledgerCard"></div>
     </main>
     <nav class="bottom-nav" id="bottomNav"></nav>
   </div>
@@ -155,6 +159,7 @@
           .forEach(el => el.classList.add('hidden'));
         document.querySelectorAll(`.rt-${type}-only`).forEach(el => el.classList.remove('hidden'));
         document.getElementById('siteSummaryCard').classList.toggle('hidden', type !== 'site');
+        document.getElementById('ledgerCard').classList.toggle('hidden', type !== 'ledger');
         document.getElementById('partyHeaderCard').classList.add('hidden');
         if (type === 'party') document.getElementById('partyFilterRow').classList.remove('hidden');
         runReport();
@@ -167,6 +172,7 @@
         else if (currentType === 'site') await runSiteReport();
         else if (currentType === 'pending') await runPendingReport();
         else if (currentType === 'gst') await runGstReport();
+        else if (currentType === 'ledger') await runLedgerReport();
         document.getElementById('banner').classList.add('hidden');
       }
 
@@ -354,6 +360,32 @@
           { label: 'Amount', right: true, render: r => formatINR(r.amount) },
           { label: 'GST', right: true, render: r => formatINR(r.raw.gst_amount) },
         ]);
+      }
+
+      async function runLedgerReport() {
+        const siteId = document.getElementById('filterSite').value || null;
+        const { data, error } = await supabase.rpc('ledger_summary', { p_site_id: siteId });
+        if (error) { console.error(error); return; }
+        const r = (data && data[0]) || {};
+        const card = document.getElementById('ledgerCard');
+        card.innerHTML = `
+          <div class="section-label" style="margin-top:0;">Project Cost (Total Credit — Client Receipts)</div>
+          <div style="font-family:var(--font-display);font-weight:700;font-size:30px;color:var(--receipt);margin-bottom:16px;">${formatINR(r.credit_total)}</div>
+
+          <div class="section-label">Debit — by category</div>
+          <div class="stat-row"><span>Material (Supplier)</span><strong>${formatINR(r.material_total)}</strong></div>
+          <div class="stat-row"><span>Contractor (incl. "work" entries)</span><strong>${formatINR(r.contractor_total)}</strong></div>
+          <div class="stat-row"><span>Machinery Expense (Excavation/JCB)</span><strong>${formatINR(r.machinery_total)}</strong></div>
+          <div class="stat-row"><span>Miscellaneous Expenses</span><strong>${formatINR(r.misc_total)}</strong></div>
+          <div class="stat-row"><span>Labour</span><strong>${formatINR(r.labour_total)}</strong></div>
+          <div class="stat-row" style="border-top:1px solid var(--line);margin-top:6px;padding-top:10px;">
+            <span>Total Debit</span><strong style="color:var(--expense)">${formatINR(r.debit_total)}</strong>
+          </div>
+          <div class="stat-row">
+            <span>Balance (Credit − Debit)</span>
+            <strong style="color:${Number(r.balance) >= 0 ? 'var(--receipt)' : 'var(--expense)'}">${formatINR(r.balance)}</strong>
+          </div>
+        `;
       }
 
       function exportExcel() {
