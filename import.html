@@ -172,9 +172,15 @@
       for (let dr = headerIdx + 1; dr < grid.length; dr++) {
         const row = grid[dr] || [];
         const dateVal = getByNames(row, colIndex, ['date']);
-        // Some source files split "Expenses Debit" into two columns ("Expenses" holding
-        // the amount, "Debit" left blank) — check all three names, in that order.
-        const amountVal = getByNames(row, colIndex, ['expenses debit', 'expenses', 'debit']);
+        // "Expenses" and "Debit" are two different figures, not two spellings of one:
+        // "Expenses" = total billed amount, "Debit" = amount actually paid so far.
+        // amount (what actually left the account) prioritizes Debit; bill_amount
+        // (what was billed/owed) prioritizes Expenses. When only one is present,
+        // both fields get that same value (nothing to split).
+        const debitVal = getByNames(row, colIndex, ['debit']);
+        const expenseVal = getByNames(row, colIndex, ['expenses', 'expenses debit']);
+        const amountVal = debitVal != null ? debitVal : expenseVal;
+        const billVal = expenseVal != null ? expenseVal : debitVal;
         if (!dateVal && !amountVal) {
           blankRun++;
           if (blankRun > 15 && out.length > 0) break; // stop once we run into trailing blank padding
@@ -191,6 +197,7 @@
           expense_head: clean(getByNames(row, colIndex, ['expense head'])),
           expense_type: clean(getByNames(row, colIndex, ['type'])),
           amount_raw: amountVal,
+          bill_amount_raw: billVal,
           payment_status: clean(getByNames(row, colIndex, ['payment status'])),
           paid_by: clean(getByNames(row, colIndex, ['payemnt done by', 'payment done by', 'paid by'])),
           payment_mode: normalizeMode(getByNames(row, colIndex, ['payement mode', 'payment mode'])),
@@ -318,6 +325,7 @@
           const site = siteByName[(row.site_name || '').toLowerCase()];
           const isoDate = excelDateToISO(row.transaction_date_raw);
           const amount = num(row.amount_raw);
+          const billAmount = row.bill_amount_raw != null ? num(row.bill_amount_raw) : amount;
 
           let status = 'ok', reason = '';
           if (!site) { status = 'bad'; reason = 'Site Mapping Error'; }
@@ -336,7 +344,7 @@
           else if (status === 'dup') dup++;
           else invalid++;
 
-          results.push({ ...row, site, isoDate, amount, status, reason });
+          results.push({ ...row, site, isoDate, amount, billAmount, status, reason });
         }
 
         banner.classList.add('hidden');
@@ -401,6 +409,7 @@
           expense_head: r.expense_head || null,
           expense_type: r.expense_type || null,
           amount: r.amount,
+          bill_amount: r.billAmount != null ? r.billAmount : r.amount,
           payment_status: r.payment_status || null,
           paid_by: r.paid_by || null,
           payment_mode: r.payment_mode || null,

@@ -29,7 +29,8 @@
         <div class="field"><label for="description">Description</label><input type="text" id="description"></div>
         <div class="field"><label for="material">Material</label><input type="text" id="material"></div>
         <div class="field"><label for="expenseHead">Expense head</label><input type="text" id="expenseHead"></div>
-        <div class="field"><label for="amount">Amount</label><input type="number" id="amount" min="0.01" step="0.01" required></div>
+        <div class="field"><label for="amount">Amount Paid</label><input type="number" id="amount" min="0.01" step="0.01" required></div>
+        <div class="field"><label for="billAmount">Total Bill Amount (leave blank if same as Amount Paid)</label><input type="number" id="billAmount" min="0.01" step="0.01"><div class="hint">Use this when only part of the bill has been paid — e.g. bill ₹87,350, paid ₹50,000 so far.</div></div>
         <div class="field">
           <label>Payment status</label>
           <div class="mode-toggle">
@@ -100,6 +101,8 @@
           const supplierName = supplierInput.value.trim();
           const amount = parseFloat(document.getElementById('amount').value);
           if (!(amount > 0)) throw new Error('Amount must be greater than zero.');
+          const billAmountRaw = document.getElementById('billAmount').value;
+          const billAmount = billAmountRaw ? parseFloat(billAmountRaw) : amount;
           const party = supplierName ? await findOrCreateParty(supplierName, 'Supplier') : null;
           const payload = {
             site_id: document.getElementById('siteSel').value,
@@ -110,6 +113,7 @@
             material_name: document.getElementById('material').value.trim() || null,
             expense_head: document.getElementById('expenseHead').value.trim() || null,
             amount,
+            bill_amount: billAmount,
             payment_status: document.querySelector('input[name="payStatus"]:checked').value,
             paid_by: document.getElementById('paidBy').value.trim() || null,
             payment_mode: document.querySelector('input[name="paymentMode"]:checked').value,
@@ -165,7 +169,7 @@
                 ${formatDate(t.transaction_date)}
               </div>
             </div>
-            <div class="txn-amount"><div class="amt debit">${formatINR(t.amount)}</div></div>
+            <div class="txn-amount"><div class="amt debit">${formatINR(t.amount)}</div>${t.bill_amount && Number(t.bill_amount) > Number(t.amount) ? `<div class="text-sm text-muted">of ${formatINR(t.bill_amount)} billed</div>` : ''}</div>
           </div>
           <div class="txn-actions">
             ${t.party_name_snapshot ? `<a class="txn-action-link" href="reports.html?type=party&partyType=Supplier&party=${encodeURIComponent(t.party_name_snapshot)}">History</a>` : ''}
