@@ -198,7 +198,8 @@
         });
         return rows.map(r => ({
           raw: r, date: r[dateCol], type: table, party: r[nameCol] || '—',
-          site_id: r.site_id, mode: r.payment_mode, amount: Number(r.amount), status: r.payment_status
+          site_id: r.site_id, mode: r.payment_mode, amount: Number(r.amount), status: r.payment_status,
+          billAmount: r.bill_amount != null ? Number(r.bill_amount) : Number(r.amount)
         }));
       }
 
@@ -229,21 +230,25 @@
         const sm = siteMapOf();
 
         const total = results.reduce((s, r) => s + r.amount, 0);
+        const totalBilled = results.reduce((s, r) => s + r.billAmount, 0);
         const cash = results.filter(r => r.mode === 'Cash').reduce((s, r) => s + r.amount, 0);
         const online = results.filter(r => r.mode === 'Online').reduce((s, r) => s + r.amount, 0);
-        renderStatGrid([
+        const stats = [
           { label: 'Total Records', value: results.length },
-          { label: 'Total Amount', value: formatINR(total) },
+          { label: 'Total Paid', value: formatINR(total) },
           { label: 'Cash Total', value: formatINR(cash) },
           { label: 'Online Total', value: formatINR(online) },
-        ]);
+        ];
+        if (totalBilled !== total) stats.splice(2, 0, { label: 'Total Billed', value: formatINR(totalBilled) });
+        renderStatGrid(stats);
         renderTable(results, [
           { label: 'Date', render: r => formatDate(r.date) },
           { label: 'Type', render: r => TYPE_LABELS[r.type] },
           { label: 'Party', render: r => r.party },
           { label: 'Site', render: r => sm[r.site_id] || '' },
           { label: 'Mode', render: r => r.mode || '' },
-          { label: 'Amount', right: true, render: r => formatINR(r.amount) },
+          { label: 'Bill Amount', right: true, render: r => r.billAmount !== r.amount ? formatINR(r.billAmount) : '' },
+          { label: 'Amount Paid', right: true, render: r => formatINR(r.amount) },
         ]);
       }
 
@@ -271,6 +276,8 @@
         const sm = siteMapOf();
 
         const total = filtered.reduce((s, r) => s + r.amount, 0);
+        const totalBilled = filtered.reduce((s, r) => s + r.billAmount, 0);
+        const outstanding = totalBilled - total;
         const cash = filtered.filter(r => r.mode === 'Cash').reduce((s, r) => s + r.amount, 0);
         const online = filtered.filter(r => r.mode === 'Online').reduce((s, r) => s + r.amount, 0);
         const pending = filtered.filter(r => r.status === 'Pending').length;
@@ -283,19 +290,23 @@
           <div class="stat-row"><span>First transaction</span><strong>${filtered[0] ? formatDate(filtered[0].date) : '—'}</strong></div>
           <div class="stat-row"><span>Last transaction</span><strong>${filtered.length ? formatDate(filtered[filtered.length - 1].date) : '—'}</strong></div>
           ${pending ? `<div class="stat-row"><span>Pending entries</span><strong style="color:var(--amber-dark)">${pending}</strong></div>` : ''}
+          ${outstanding > 0 ? `<div class="stat-row"><span>Billed but not yet paid</span><strong style="color:var(--amber-dark)">${formatINR(outstanding)}</strong></div>` : ''}
         `;
-        renderStatGrid([
-          { label: 'Total Amount', value: formatINR(total) },
+        const partyStats = [
+          { label: 'Total Paid', value: formatINR(total) },
           { label: 'Cash', value: formatINR(cash) },
           { label: 'Online', value: formatINR(online) },
           { label: 'Entries', value: filtered.length },
-        ]);
+        ];
+        if (totalBilled !== total) partyStats.splice(1, 0, { label: 'Total Billed', value: formatINR(totalBilled) });
+        renderStatGrid(partyStats);
         renderTable(filtered, [
           { label: 'Date', render: r => formatDate(r.date) },
           { label: 'Site', render: r => sm[r.site_id] || '' },
           { label: 'Mode', render: r => r.mode || '' },
           { label: 'Status', render: r => r.status || '' },
-          { label: 'Amount', right: true, render: r => formatINR(r.amount) },
+          { label: 'Bill Amount', right: true, render: r => r.billAmount !== r.amount ? formatINR(r.billAmount) : '' },
+          { label: 'Amount Paid', right: true, render: r => formatINR(r.amount) },
         ]);
       }
 
@@ -406,7 +417,8 @@
         const sm = siteMapOf();
         const rows = (currentRows || []).map(r => ({
           Date: r.date, Type: TYPE_LABELS[r.type] || currentType, Party: r.party,
-          Site: sm[r.site_id] || '', Mode: r.mode || '', Amount: r.amount,
+          Site: sm[r.site_id] || '', Mode: r.mode || '',
+          'Bill Amount': r.billAmount, 'Amount Paid': r.amount,
           ...(currentType === 'gst' ? { GST: r.raw.gst_amount } : {}),
         }));
         const ws = XLSX.utils.json_to_sheet(rows);
