@@ -199,7 +199,8 @@
         return rows.map(r => ({
           raw: r, date: r[dateCol], type: table, party: r[nameCol] || '—',
           site_id: r.site_id, mode: r.payment_mode, amount: Number(r.amount), status: r.payment_status,
-          billAmount: r.bill_amount != null ? Number(r.bill_amount) : Number(r.amount)
+          expenseAmount: r.expense_amount != null ? Number(r.expense_amount) : null,
+          debitAmount: r.debit_amount != null ? Number(r.debit_amount) : null,
         }));
       }
 
@@ -230,13 +231,14 @@
         const sm = siteMapOf();
 
         const total = results.reduce((s, r) => s + r.amount, 0);
-        const totalBilled = results.reduce((s, r) => s + r.billAmount, 0);
+        const expTotal = results.reduce((s, r) => s + (r.expenseAmount || 0), 0);
+        const debTotal = results.reduce((s, r) => s + (r.debitAmount || 0), 0);
         const cash = results.filter(r => r.mode === 'Cash').reduce((s, r) => s + r.amount, 0);
         const online = results.filter(r => r.mode === 'Online').reduce((s, r) => s + r.amount, 0);
         renderStatGrid([
           { label: 'Total Records', value: results.length },
-          { label: 'Expenses Total', value: formatINR(totalBilled) },
-          { label: 'Debit Total', value: formatINR(total) },
+          { label: 'Expenses Total', value: formatINR(expTotal) },
+          { label: 'Debit Total', value: formatINR(debTotal) },
           { label: 'Cash Total', value: formatINR(cash) },
           { label: 'Online Total', value: formatINR(online) },
         ]);
@@ -246,8 +248,8 @@
           { label: 'Party', render: r => r.party },
           { label: 'Site', render: r => sm[r.site_id] || '' },
           { label: 'Mode', render: r => r.mode || '' },
-          { label: 'Expenses', right: true, render: r => formatINR(r.billAmount) },
-          { label: 'Debit', right: true, render: r => formatINR(r.amount) },
+          { label: 'Expenses', right: true, render: r => r.expenseAmount != null ? formatINR(r.expenseAmount) : '' },
+          { label: 'Debit', right: true, render: r => r.debitAmount != null ? formatINR(r.debitAmount) : '' },
         ]);
       }
 
@@ -275,8 +277,8 @@
         const sm = siteMapOf();
 
         const total = filtered.reduce((s, r) => s + r.amount, 0);
-        const totalBilled = filtered.reduce((s, r) => s + r.billAmount, 0);
-        const outstanding = totalBilled - total;
+        const expTotal = filtered.reduce((s, r) => s + (r.expenseAmount || 0), 0);
+        const debTotal = filtered.reduce((s, r) => s + (r.debitAmount || 0), 0);
         const cash = filtered.filter(r => r.mode === 'Cash').reduce((s, r) => s + r.amount, 0);
         const online = filtered.filter(r => r.mode === 'Online').reduce((s, r) => s + r.amount, 0);
         const pending = filtered.filter(r => r.status === 'Pending').length;
@@ -289,11 +291,10 @@
           <div class="stat-row"><span>First transaction</span><strong>${filtered[0] ? formatDate(filtered[0].date) : '—'}</strong></div>
           <div class="stat-row"><span>Last transaction</span><strong>${filtered.length ? formatDate(filtered[filtered.length - 1].date) : '—'}</strong></div>
           ${pending ? `<div class="stat-row"><span>Pending entries</span><strong style="color:var(--amber-dark)">${pending}</strong></div>` : ''}
-          ${outstanding > 0 ? `<div class="stat-row"><span>Billed but not yet paid</span><strong style="color:var(--amber-dark)">${formatINR(outstanding)}</strong></div>` : ''}
         `;
         const partyStats = [
-          { label: 'Expenses Total', value: formatINR(totalBilled) },
-          { label: 'Debit Total', value: formatINR(total) },
+          { label: 'Expenses Total', value: formatINR(expTotal) },
+          { label: 'Debit Total', value: formatINR(debTotal) },
           { label: 'Cash', value: formatINR(cash) },
           { label: 'Online', value: formatINR(online) },
           { label: 'Entries', value: filtered.length },
@@ -304,8 +305,8 @@
           { label: 'Site', render: r => sm[r.site_id] || '' },
           { label: 'Mode', render: r => r.mode || '' },
           { label: 'Status', render: r => r.status || '' },
-          { label: 'Expenses', right: true, render: r => formatINR(r.billAmount) },
-          { label: 'Debit', right: true, render: r => formatINR(r.amount) },
+          { label: 'Expenses', right: true, render: r => r.expenseAmount != null ? formatINR(r.expenseAmount) : '' },
+          { label: 'Debit', right: true, render: r => r.debitAmount != null ? formatINR(r.debitAmount) : '' },
         ]);
       }
 
@@ -417,7 +418,7 @@
         const rows = (currentRows || []).map(r => ({
           Date: r.date, Type: TYPE_LABELS[r.type] || currentType, Party: r.party,
           Site: sm[r.site_id] || '', Mode: r.mode || '',
-          'Expenses': r.billAmount, 'Debit': r.amount,
+          'Expenses': r.expenseAmount, 'Debit': r.debitAmount, 'Amount': r.amount,
           ...(currentType === 'gst' ? { GST: r.raw.gst_amount } : {}),
         }));
         const ws = XLSX.utils.json_to_sheet(rows);

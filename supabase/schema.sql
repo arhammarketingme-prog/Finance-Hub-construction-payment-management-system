@@ -88,7 +88,8 @@ create table if not exists public.expense_transactions (
   expense_head        text,
   expense_type        text,               -- from "Type" column (Genial sheet)
   amount              numeric(14,2) not null check (amount > 0),
-  bill_amount         numeric(14,2), -- total billed amount if different from amount paid (e.g. partial payment)
+  expense_amount      numeric(14,2), -- literal "Expenses" column value, null if that cell was blank
+  debit_amount        numeric(14,2), -- literal "Debit" column value, null if that cell was blank
   payment_status      text,
   paid_by             text,
   payment_mode        text check (payment_mode in ('Cash','Online')),
@@ -150,7 +151,8 @@ create table if not exists public.contractor_payments (
   site_id        uuid not null references public.sites(id),
   payment_date   date not null,
   amount         numeric(14,2) not null check (amount > 0),
-  bill_amount    numeric(14,2), -- total billed amount if different from amount paid
+  expense_amount numeric(14,2),
+  debit_amount   numeric(14,2),
   payment_mode   text not null check (payment_mode in ('Cash','Online')),
   payment_status text,
   remarks        text,
