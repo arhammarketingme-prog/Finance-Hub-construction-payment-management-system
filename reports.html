@@ -49,13 +49,7 @@
           <select id="filterMode" class="rt-list-only rt-party-only"><option value="">Any mode</option><option value="Cash">Cash</option><option value="Online">Online</option></select>
         </div>
         <div class="filter-row rt-party-only hidden" id="partyFilterRow">
-          <select id="partyType">
-            <option value="Client">Client</option>
-            <option value="Supplier">Supplier</option>
-            <option value="Contractor">Contractor</option>
-            <option value="Labour">Labour</option>
-          </select>
-          <input type="text" id="partyNameInput" list="partyOptions" placeholder="Type a name…" style="flex:1;min-width:140px;border:1px solid var(--line);border-radius:20px;padding:6px 12px;font-size:12.5px;">
+          <input type="text" id="partyNameInput" list="partyOptions" placeholder="Type a name — searches Client, Supplier, Contractor &amp; Labour together…" style="flex:1;min-width:220px;border:1px solid var(--line);border-radius:20px;padding:6px 12px;font-size:12.5px;">
           <datalist id="partyOptions"></datalist>
         </div>
         <div class="filter-row rt-list-only rt-party-only rt-pending-only rt-gst-only">
@@ -122,12 +116,12 @@
       contractor_payments:  { dateCol: 'payment_date',      nameCol: 'contractor_name_snapshot' },
       labour_payments:      { dateCol: 'payment_date',      nameCol: 'labour_name_snapshot' },
     };
-    const PARTY_TABLE = {
-      Client: { table: 'client_payments', idCol: 'client_id', nameCol: 'client_name', dateCol: 'payment_date' },
-      Supplier: { table: 'expense_transactions', idCol: 'party_id', nameCol: 'party_name_snapshot', dateCol: 'transaction_date' },
-      Contractor: { table: 'contractor_payments', idCol: 'contractor_id', nameCol: 'contractor_name_snapshot', dateCol: 'payment_date' },
-      Labour: { table: 'labour_payments', idCol: 'labour_id', nameCol: 'labour_name_snapshot', dateCol: 'payment_date' },
-    };
+    const PARTY_TABLES = [
+      { key: 'Client',     table: 'client_payments',      nameCol: 'client_name',              dateCol: 'payment_date' },
+      { key: 'Supplier',   table: 'expense_transactions',  nameCol: 'party_name_snapshot',      dateCol: 'transaction_date' },
+      { key: 'Contractor', table: 'contractor_payments',   nameCol: 'contractor_name_snapshot', dateCol: 'payment_date' },
+      { key: 'Labour',     table: 'labour_payments',       nameCol: 'labour_name_snapshot',     dateCol: 'payment_date' },
+    ];
 
     (async () => {
       auth = await requireAuth(); if (!auth) return;
@@ -141,14 +135,15 @@
       document.getElementById('applyBtn').addEventListener('click', runReport);
       document.getElementById('exportExcelBtn').addEventListener('click', exportExcel);
       document.getElementById('exportPdfBtn').addEventListener('click', () => window.print());
-      document.getElementById('partyType').addEventListener('change', () => { selectedParty = null; document.getElementById('partyNameInput').value = ''; refreshPartyOptions(); });
       const partyNameInput = document.getElementById('partyNameInput');
       partyNameInput.addEventListener('input', debounce(refreshPartyOptions, 250));
 
       async function refreshPartyOptions() {
-        const type = document.getElementById('partyType').value;
-        const list = await searchParties(partyNameInput.value, type);
-        document.getElementById('partyOptions').innerHTML = list.map(p => `<option value="${p.party_name}">`).join('');
+        // suggestions pooled across all party types — a name can appear as Supplier
+        // in one entry and Contractor in another, and both should surface here.
+        const lists = await Promise.all(['Client', 'Supplier', 'Contractor', 'Labour'].map(t => searchParties(partyNameInput.value, t)));
+        const names = [...new Set(lists.flat().map(p => p.party_name))];
+        document.getElementById('partyOptions').innerHTML = names.map(n => `<option value="${n}">`).join('');
       }
       refreshPartyOptions();
 
@@ -237,7 +232,7 @@
         const online = results.filter(r => r.mode === 'Online').reduce((s, r) => s + r.amount, 0);
         renderStatGrid([
           { label: 'Total Records', value: results.length },
-          { label: 'Expenses Total', value: formatINR(expTotal) },
+          { label: 'Credit Total', value: formatINR(expTotal) },
           { label: 'Debit Total', value: formatINR(debTotal) },
           { label: 'Cash Total', value: formatINR(cash) },
           { label: 'Online Total', value: formatINR(online) },
@@ -248,30 +243,32 @@
           { label: 'Party', render: r => r.party },
           { label: 'Site', render: r => sm[r.site_id] || '' },
           { label: 'Mode', render: r => r.mode || '' },
-          { label: 'Expenses', right: true, render: r => r.expenseAmount != null ? formatINR(r.expenseAmount) : '' },
+          { label: 'Credit', right: true, render: r => r.expenseAmount != null ? formatINR(r.expenseAmount) : '' },
           { label: 'Debit', right: true, render: r => r.debitAmount != null ? formatINR(r.debitAmount) : '' },
         ]);
       }
 
       async function runPartyReport() {
-        const type = document.getElementById('partyType').value;
         const name = document.getElementById('partyNameInput').value.trim();
-        const meta = PARTY_TABLE[type];
         const headerCard = document.getElementById('partyHeaderCard');
         if (!name) {
           headerCard.classList.add('hidden');
           currentRows = [];
           renderStatGrid([]);
           renderTable([], [{ label: 'Date', render: () => '' }]);
-          document.getElementById('reportBody').innerHTML = `<tr><td class="text-sm text-muted">Type a ${type.toLowerCase()} name above to see their full history.</td></tr>`;
+          document.getElementById('reportBody').innerHTML = `<tr><td class="text-sm text-muted">Type a name above to see their full ledger — Client, Supplier, Contractor and Labour entries, all combined.</td></tr>`;
           return;
         }
-        const rows = await fetchTable(meta.table, meta.dateCol, meta.nameCol, {
-          // match by exact name (party names are unique per type) rather than site/mode filters here —
-          // a party's ledger should show their full history regardless of site.
-          siteId: document.getElementById('filterSite').value || null,
-        });
-        const filtered = rows.filter(r => (r.party || '').trim().toLowerCase() === name.toLowerCase());
+        const siteId = document.getElementById('filterSite').value || null;
+
+        // Search all four ledgers for this exact name (case-insensitive) — a person can
+        // appear as a Supplier in one entry and a Contractor in another, and their full
+        // ledger must show every one of those, combined, not just one category at a time.
+        const tasks = PARTY_TABLES.map(t => fetchTable(t.table, t.dateCol, t.nameCol, { siteId }).then(rows =>
+          rows.filter(r => (r.party || '').trim().toLowerCase() === name.toLowerCase())
+              .map(r => ({ ...r, ledger: t.key }))
+        ));
+        const filtered = (await Promise.all(tasks)).flat();
         filtered.sort((a, b) => new Date(a.date) - new Date(b.date)); // chronological for a ledger
         currentRows = filtered;
         const sm = siteMapOf();
@@ -282,18 +279,20 @@
         const cash = filtered.filter(r => r.mode === 'Cash').reduce((s, r) => s + r.amount, 0);
         const online = filtered.filter(r => r.mode === 'Online').reduce((s, r) => s + r.amount, 0);
         const pending = filtered.filter(r => r.status === 'Pending').length;
+        const byLedger = {};
+        filtered.forEach(r => { byLedger[r.ledger] = (byLedger[r.ledger] || 0) + r.amount; });
 
         headerCard.classList.remove('hidden');
         headerCard.innerHTML = `
-          <div class="site-tag" style="margin-bottom:8px;">${type}</div>
           <div style="font-family:var(--font-display);font-weight:700;font-size:22px;margin-bottom:10px;">${name}</div>
-          <div class="stat-row"><span>Total transactions</span><strong>${filtered.length}</strong></div>
+          <div class="stat-row"><span>Total transactions (all ledgers)</span><strong>${filtered.length}</strong></div>
           <div class="stat-row"><span>First transaction</span><strong>${filtered[0] ? formatDate(filtered[0].date) : '—'}</strong></div>
           <div class="stat-row"><span>Last transaction</span><strong>${filtered.length ? formatDate(filtered[filtered.length - 1].date) : '—'}</strong></div>
           ${pending ? `<div class="stat-row"><span>Pending entries</span><strong style="color:var(--amber-dark)">${pending}</strong></div>` : ''}
+          ${Object.entries(byLedger).map(([k, v]) => `<div class="stat-row"><span>${k}</span><strong>${formatINR(v)}</strong></div>`).join('')}
         `;
         const partyStats = [
-          { label: 'Expenses Total', value: formatINR(expTotal) },
+          { label: 'Credit Total', value: formatINR(expTotal) },
           { label: 'Debit Total', value: formatINR(debTotal) },
           { label: 'Cash', value: formatINR(cash) },
           { label: 'Online', value: formatINR(online) },
@@ -302,10 +301,11 @@
         renderStatGrid(partyStats);
         renderTable(filtered, [
           { label: 'Date', render: r => formatDate(r.date) },
+          { label: 'Ledger', render: r => r.ledger },
           { label: 'Site', render: r => sm[r.site_id] || '' },
           { label: 'Mode', render: r => r.mode || '' },
           { label: 'Status', render: r => r.status || '' },
-          { label: 'Expenses', right: true, render: r => r.expenseAmount != null ? formatINR(r.expenseAmount) : '' },
+          { label: 'Credit', right: true, render: r => r.expenseAmount != null ? formatINR(r.expenseAmount) : '' },
           { label: 'Debit', right: true, render: r => r.debitAmount != null ? formatINR(r.debitAmount) : '' },
         ]);
       }
@@ -418,7 +418,7 @@
         const rows = (currentRows || []).map(r => ({
           Date: r.date, Type: TYPE_LABELS[r.type] || currentType, Party: r.party,
           Site: sm[r.site_id] || '', Mode: r.mode || '',
-          'Expenses': r.expenseAmount, 'Debit': r.debitAmount, 'Amount': r.amount,
+          'Credit': r.expenseAmount, 'Debit': r.debitAmount, 'Amount': r.amount,
           ...(currentType === 'gst' ? { GST: r.raw.gst_amount } : {}),
         }));
         const ws = XLSX.utils.json_to_sheet(rows);
@@ -429,10 +429,9 @@
 
       switchReportType('list');
 
-      // Deep link support: reports.html?type=party&partyType=Client&party=Name
+      // Deep link support: reports.html?type=party&party=Name (searches all ledgers now)
       const params = new URLSearchParams(location.search);
       if (params.get('type') === 'party') {
-        document.getElementById('partyType').value = params.get('partyType') || 'Client';
         document.getElementById('partyNameInput').value = params.get('party') || '';
         switchReportType('party');
       }
