@@ -21,8 +21,13 @@
       <div id="banner" class="banner hidden"></div>
 
       <form id="paymentForm" class="card hidden">
+        <div class="repeat-banner hidden" id="repeatBanner">
+          <span>Repeat your last client receipt?</span>
+          <button type="button" id="repeatBtn">Use it</button>
+        </div>
         <div class="field">
           <label for="clientName">Client</label>
+          <div class="recent-parties" id="recentParties"></div>
           <input type="text" id="clientName" list="clientList" placeholder="Type client name" required>
           <datalist id="clientList"></datalist>
         </div>
@@ -96,7 +101,8 @@
   <script type="module">
     import {
       requireAuth, supabase, renderChrome, renderSubNav, currentSiteId, getSites,
-      formatINR, formatDate, todayISO, showBanner, debounce, logAudit, findOrCreateParty, archiveRecord
+      formatINR, formatDate, todayISO, showBanner, debounce, logAudit, findOrCreateParty, archiveRecord, siteColor,
+      getRecentPartyNames, getLastEntry, getAttachments, getAttachmentUrl
     } from './assets/app.js';
 
     let auth, sites;
@@ -114,6 +120,27 @@
       filterSite.innerHTML += sites.map(s => `<option value="${s.id}">${s.site_name}</option>`).join('');
 
       document.getElementById('paymentDate').value = todayISO();
+
+      // Recent parties — tap to fill instead of typing
+      getRecentPartyNames('client_payments', 'client_name', 'payment_date').then(names => {
+        document.getElementById('recentParties').innerHTML = names.map(n =>
+          `<button type="button" class="recent-chip" data-name="${n}">${n}</button>`).join('');
+        document.querySelectorAll('.recent-chip').forEach(chip => {
+          chip.addEventListener('click', () => { document.getElementById('clientName').value = chip.dataset.name; });
+        });
+      });
+
+      // Repeat last entry
+      getLastEntry('client_payments', currentSiteId()).then(last => {
+        if (!last) return;
+        document.getElementById('repeatBanner').classList.remove('hidden');
+        document.getElementById('repeatBtn').addEventListener('click', () => {
+          document.getElementById('clientName').value = last.client_name;
+          document.getElementById('siteSel').value = last.site_id;
+          document.querySelector(`input[name="paymentMode"][value="${last.payment_mode}"]`).checked = true;
+          document.getElementById('repeatBanner').classList.add('hidden');
+        });
+      });
 
       const form = document.getElementById('paymentForm');
       const toggleBtn = document.getElementById('toggleFormBtn');
@@ -218,7 +245,7 @@
             <div class="txn-main">
               <div class="txn-party">${t.client_name}</div>
               <div class="txn-meta">
-                <span class="site-tag">${siteMap[t.site_id] || ''}</span>
+                <span class="site-tag"><span class="site-dot" style="background:${siteColor(t.site_id, sites)}"></span>${siteMap[t.site_id] || ''}</span>
                 <span class="chip ${t.payment_mode.toLowerCase()}">${t.payment_mode}</span>
                 ${formatDate(t.payment_date)}
               </div>
@@ -226,7 +253,8 @@
             <div class="txn-amount"><div class="amt credit">${formatINR(t.amount)}</div>${t.gst_applicable ? `<div class="text-sm text-muted">GST ${formatINR(t.gst_amount)}</div>` : ''}</div>
           </div>
           <div class="txn-actions">
-            <a class="txn-action-link" href="reports.html?type=party&partyType=Client&party=${encodeURIComponent(t.client_name)}">History</a>
+            <button class="attach-chip view-attach-btn" data-id="${t.id}">📎 Attachments</button>
+            <a class="txn-action-link" href="reports.html?type=party&party=${encodeURIComponent(t.client_name)}">History</a>
             <button class="txn-action-link archive-btn" data-id="${t.id}">Archive</button>
           </div>`).join('');
 
@@ -237,6 +265,18 @@
             if (ok) loadList(); else showBanner(banner, 'Could not archive this record.', 'error');
           });
         });
+        listCard.querySelectorAll('.view-attach-btn').forEach(btn => {
+          btn.addEventListener('click', () => showAttachments('client_payments', btn.dataset.id));
+        });
+      }
+
+      async function showAttachments(table, id) {
+        const files = await getAttachments(table, id);
+        if (!files.length) { alert('No attachments on this entry.'); return; }
+        for (const f of files) {
+          const url = await getAttachmentUrl(f.file_path);
+          if (url) window.open(url, '_blank');
+        }
       }
 
       [filterSite, document.getElementById('filterMode'), document.getElementById('filterRange')]

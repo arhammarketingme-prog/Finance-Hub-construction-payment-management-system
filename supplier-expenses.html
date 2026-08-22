@@ -19,8 +19,13 @@
       <div id="banner" class="banner hidden"></div>
 
       <form id="expenseForm" class="card hidden">
+        <div class="repeat-banner hidden" id="repeatBanner">
+          <span>Repeat your last expense entry?</span>
+          <button type="button" id="repeatBtn">Use it</button>
+        </div>
         <div class="field">
           <label for="supplierName">Supplier</label>
+          <div class="recent-parties" id="recentParties"></div>
           <input type="text" id="supplierName" list="supplierList" required>
           <datalist id="supplierList"></datalist>
         </div>
@@ -29,8 +34,8 @@
         <div class="field"><label for="description">Description</label><input type="text" id="description"></div>
         <div class="field"><label for="material">Material</label><input type="text" id="material"></div>
         <div class="field"><label for="expenseHead">Expense head</label><input type="text" id="expenseHead"></div>
-        <div class="field"><label for="amount">Amount Paid</label><input type="number" id="amount" min="0.01" step="0.01" required></div>
-        <div class="field"><label for="billAmount">Total Bill Amount (leave blank if same as Amount Paid)</label><input type="number" id="billAmount" min="0.01" step="0.01"><div class="hint">Use this when only part of the bill has been paid — e.g. bill ₹87,350, paid ₹50,000 so far.</div></div>
+        <div class="field"><label for="amount">Amount Paid (Debit)</label><input type="number" id="amount" min="0.01" step="0.01" required></div>
+        <div class="field"><label for="billAmount">Total Bill Amount (Credit — leave blank if same as Amount Paid)</label><input type="number" id="billAmount" min="0.01" step="0.01"><div class="hint">Use this when only part of the bill has been paid — e.g. bill ₹87,350, paid ₹50,000 so far.</div></div>
         <div class="field">
           <label>Payment status</label>
           <div class="mode-toggle">
@@ -67,7 +72,8 @@
   <script type="module">
     import {
       requireAuth, supabase, renderChrome, renderSubNav, currentSiteId, getSites,
-      formatINR, formatDate, todayISO, showBanner, debounce, logAudit, findOrCreateParty, archiveRecord
+      formatINR, formatDate, todayISO, showBanner, debounce, logAudit, findOrCreateParty, archiveRecord, siteColor,
+      getRecentPartyNames, getLastEntry, getAttachments, getAttachmentUrl
     } from './assets/app.js';
 
     let auth, sites;
@@ -79,6 +85,24 @@
       document.getElementById('siteSel').innerHTML = sites.map(s => `<option value="${s.id}">${s.site_name}</option>`).join('');
       document.getElementById('filterSite').innerHTML += sites.map(s => `<option value="${s.id}">${s.site_name}</option>`).join('');
       document.getElementById('txnDate').value = todayISO();
+
+      getRecentPartyNames('expense_transactions', 'party_name_snapshot', 'transaction_date').then(names => {
+        document.getElementById('recentParties').innerHTML = names.map(n =>
+          `<button type="button" class="recent-chip" data-name="${n}">${n}</button>`).join('');
+        document.querySelectorAll('.recent-chip').forEach(chip => {
+          chip.addEventListener('click', () => { document.getElementById('supplierName').value = chip.dataset.name; });
+        });
+      });
+      getLastEntry('expense_transactions', currentSiteId()).then(last => {
+        if (!last) return;
+        document.getElementById('repeatBanner').classList.remove('hidden');
+        document.getElementById('repeatBtn').addEventListener('click', () => {
+          document.getElementById('supplierName').value = last.party_name_snapshot || '';
+          document.getElementById('siteSel').value = last.site_id;
+          if (last.payment_mode) document.querySelector(`input[name="paymentMode"][value="${last.payment_mode}"]`).checked = true;
+          document.getElementById('repeatBanner').classList.add('hidden');
+        });
+      });
 
       const form = document.getElementById('expenseForm');
       const toggleBtn = document.getElementById('toggleFormBtn');
@@ -113,7 +137,8 @@
             material_name: document.getElementById('material').value.trim() || null,
             expense_head: document.getElementById('expenseHead').value.trim() || null,
             amount,
-            bill_amount: billAmount,
+            expense_amount: billAmount,
+            debit_amount: amount,
             payment_status: document.querySelector('input[name="payStatus"]:checked').value,
             paid_by: document.getElementById('paidBy').value.trim() || null,
             payment_mode: document.querySelector('input[name="paymentMode"]:checked').value,
@@ -163,16 +188,17 @@
             <div class="txn-main">
               <div class="txn-party">${t.party_name_snapshot || t.material_name || 'Expense'}</div>
               <div class="txn-meta">
-                <span class="site-tag">${siteMap[t.site_id] || ''}</span>
+                <span class="site-tag"><span class="site-dot" style="background:${siteColor(t.site_id, sites)}"></span>${siteMap[t.site_id] || ''}</span>
                 <span class="chip ${t.payment_mode ? t.payment_mode.toLowerCase() : ''}">${t.payment_mode || ''}</span>
                 <span class="chip ${t.payment_status === 'Paid' ? 'paid' : 'pending'}">${t.payment_status || ''}</span>
                 ${formatDate(t.transaction_date)}
               </div>
             </div>
-            <div class="txn-amount"><div class="amt debit">${formatINR(t.amount)}</div>${t.bill_amount && Number(t.bill_amount) > Number(t.amount) ? `<div class="text-sm text-muted">of ${formatINR(t.bill_amount)} billed</div>` : ''}</div>
+            <div class="txn-amount"><div class="amt debit">${formatINR(t.amount)}</div>${t.expense_amount != null && t.debit_amount != null && Number(t.expense_amount) !== Number(t.debit_amount) ? `<div class="text-sm text-muted">Credit ${formatINR(t.expense_amount)} · Debit ${formatINR(t.debit_amount)}</div>` : ''}</div>
           </div>
           <div class="txn-actions">
-            ${t.party_name_snapshot ? `<a class="txn-action-link" href="reports.html?type=party&partyType=Supplier&party=${encodeURIComponent(t.party_name_snapshot)}">History</a>` : ''}
+            <button class="attach-chip view-attach-btn" data-id="${t.id}">📎 Attachments</button>
+            ${t.party_name_snapshot ? `<a class="txn-action-link" href="reports.html?type=party&party=${encodeURIComponent(t.party_name_snapshot)}">History</a>` : ''}
             <button class="txn-action-link archive-btn" data-id="${t.id}">Archive</button>
           </div>`).join('');
 
@@ -183,6 +209,18 @@
             if (ok) loadList(); else showBanner(banner, 'Could not archive this record.', 'error');
           });
         });
+        listCard.querySelectorAll('.view-attach-btn').forEach(btn => {
+          btn.addEventListener('click', () => showAttachments('expense_transactions', btn.dataset.id));
+        });
+      }
+
+      async function showAttachments(table, id) {
+        const files = await getAttachments(table, id);
+        if (!files.length) { alert('No attachments on this entry.'); return; }
+        for (const f of files) {
+          const url = await getAttachmentUrl(f.file_path);
+          if (url) window.open(url, '_blank');
+        }
       }
       [document.getElementById('filterSite'), document.getElementById('filterMode')].forEach(el => el.addEventListener('change', loadList));
       document.getElementById('searchBox').addEventListener('input', debounce(loadList, 300));

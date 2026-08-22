@@ -19,7 +19,15 @@
       <div id="banner" class="banner hidden"></div>
 
       <form id="payForm" class="card hidden">
-        <div class="field"><label for="partyName">Contractor</label><input type="text" id="partyName" list="partyList" required><datalist id="partyList"></datalist></div>
+        <div class="repeat-banner hidden" id="repeatBanner">
+          <span>Repeat your last contractor payment?</span>
+          <button type="button" id="repeatBtn">Use it</button>
+        </div>
+        <div class="field">
+          <label for="partyName">Contractor</label>
+          <div class="recent-parties" id="recentParties"></div>
+          <input type="text" id="partyName" list="partyList" required><datalist id="partyList"></datalist>
+        </div>
         <div class="field"><label for="siteSel">Site</label><select id="siteSel" required></select></div>
         <div class="field"><label for="payDate">Payment date</label><input type="date" id="payDate" required></div>
         <div class="field"><label for="amount">Amount</label><input type="number" id="amount" min="0.01" step="0.01" required></div>
@@ -58,7 +66,8 @@
   <script type="module">
     import {
       requireAuth, supabase, renderChrome, renderSubNav, currentSiteId, getSites,
-      formatINR, formatDate, todayISO, showBanner, debounce, logAudit, findOrCreateParty, archiveRecord
+      formatINR, formatDate, todayISO, showBanner, debounce, logAudit, findOrCreateParty, archiveRecord, siteColor,
+      getRecentPartyNames, getLastEntry, getAttachments, getAttachmentUrl
     } from './assets/app.js';
 
     const TABLE = 'contractor_payments';
@@ -73,6 +82,24 @@
       document.getElementById('siteSel').innerHTML = sites.map(s => `<option value="${s.id}">${s.site_name}</option>`).join('');
       document.getElementById('filterSite').innerHTML += sites.map(s => `<option value="${s.id}">${s.site_name}</option>`).join('');
       document.getElementById('payDate').value = todayISO();
+
+      getRecentPartyNames(TABLE, 'contractor_name_snapshot', 'payment_date').then(names => {
+        document.getElementById('recentParties').innerHTML = names.map(n =>
+          `<button type="button" class="recent-chip" data-name="${n}">${n}</button>`).join('');
+        document.querySelectorAll('.recent-chip').forEach(chip => {
+          chip.addEventListener('click', () => { document.getElementById('partyName').value = chip.dataset.name; });
+        });
+      });
+      getLastEntry(TABLE, currentSiteId()).then(last => {
+        if (!last) return;
+        document.getElementById('repeatBanner').classList.remove('hidden');
+        document.getElementById('repeatBtn').addEventListener('click', () => {
+          document.getElementById('partyName').value = last.contractor_name_snapshot || '';
+          document.getElementById('siteSel').value = last.site_id;
+          document.querySelector(`input[name="paymentMode"][value="${last.payment_mode}"]`).checked = true;
+          document.getElementById('repeatBanner').classList.add('hidden');
+        });
+      });
 
       const form = document.getElementById('payForm');
       const toggleBtn = document.getElementById('toggleFormBtn');
@@ -149,7 +176,7 @@
             <div class="txn-main">
               <div class="txn-party">${t.contractor_name_snapshot}</div>
               <div class="txn-meta">
-                <span class="site-tag">${siteMap[t.site_id] || ''}</span>
+                <span class="site-tag"><span class="site-dot" style="background:${siteColor(t.site_id, sites)}"></span>${siteMap[t.site_id] || ''}</span>
                 <span class="chip ${t.payment_mode.toLowerCase()}">${t.payment_mode}</span>
                 <span class="chip ${t.payment_status === 'Paid' ? 'paid' : 'pending'}">${t.payment_status}</span>
                 ${formatDate(t.payment_date)}
@@ -158,7 +185,8 @@
             <div class="txn-amount"><div class="amt debit">${formatINR(t.amount)}</div></div>
           </div>
           <div class="txn-actions">
-            <a class="txn-action-link" href="reports.html?type=party&partyType=Contractor&party=${encodeURIComponent(t.contractor_name_snapshot)}">History</a>
+            <button class="attach-chip view-attach-btn" data-id="${t.id}">📎 Attachments</button>
+            <a class="txn-action-link" href="reports.html?type=party&party=${encodeURIComponent(t.contractor_name_snapshot)}">History</a>
             <button class="txn-action-link archive-btn" data-id="${t.id}">Archive</button>
           </div>`).join('');
 
@@ -169,6 +197,18 @@
             if (ok) loadList(); else showBanner(banner, 'Could not archive this record.', 'error');
           });
         });
+        listCard.querySelectorAll('.view-attach-btn').forEach(btn => {
+          btn.addEventListener('click', () => showAttachments(TABLE, btn.dataset.id));
+        });
+      }
+
+      async function showAttachments(table, id) {
+        const files = await getAttachments(table, id);
+        if (!files.length) { alert('No attachments on this entry.'); return; }
+        for (const f of files) {
+          const url = await getAttachmentUrl(f.file_path);
+          if (url) window.open(url, '_blank');
+        }
       }
       [document.getElementById('filterSite'), document.getElementById('filterMode')].forEach(el => el.addEventListener('change', loadList));
       document.getElementById('searchBox').addEventListener('input', debounce(loadList, 300));

@@ -77,6 +77,7 @@ export async function renderChrome({ activeNav, title } = {}) {
     header.innerHTML = `
       <div class="brand">Finance<span class="dot">.</span>Hub</div>
       <div class="header-actions">
+        <button class="global-search-btn" id="globalSearchBtn" title="Search">⌕</button>
         <select id="siteSelector">
           <option value="all" ${sel === 'all' ? 'selected' : ''}>All Sites</option>
           ${sites.map(s => `<option value="${s.id}" ${sel === s.id ? 'selected' : ''}>${s.site_name}</option>`).join('')}
@@ -88,6 +89,7 @@ export async function renderChrome({ activeNav, title } = {}) {
       window.location.reload();
     });
     document.getElementById('logoutBtn').addEventListener('click', logout);
+    document.getElementById('globalSearchBtn').addEventListener('click', openGlobalSearch);
   }
 
   const nav = document.getElementById('bottomNav');
@@ -179,6 +181,98 @@ export async function archiveRecord(table, id) {
   const { error } = await supabase.from(table).update({ status: 'archived' }).eq('id', id);
   if (!error) await logAudit('archive', table, id, {});
   return !error;
+}
+
+// ---------- Recent parties (quick-select chips on entry forms) ----------
+export async function getRecentPartyNames(table, nameCol, dateCol, limit = 6) {
+  const { data, error } = await supabase
+    .from(table).select(`${nameCol}, ${dateCol}`)
+    .eq('status', 'active').not(nameCol, 'is', null)
+    .order(dateCol, { ascending: false }).limit(50);
+  if (error) { console.error(error); return []; }
+  const seen = new Set(), out = [];
+  for (const row of data) {
+    const name = (row[nameCol] || '').trim();
+    if (name && !seen.has(name.toLowerCase())) { seen.add(name.toLowerCase()); out.push(name); }
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+// ---------- Repeat last entry (prefill site/party/mode from most recent row) ----------
+export async function getLastEntry(table, siteId) {
+  let q = supabase.from(table).select('*').eq('status', 'active').order('created_at', { ascending: false }).limit(1);
+  if (siteId && siteId !== 'all') q = q.eq('site_id', siteId);
+  const { data, error } = await q;
+  if (error || !data || !data.length) return null;
+  return data[0];
+}
+
+// ---------- Attachments ----------
+export async function getAttachments(table, recordId) {
+  const { data, error } = await supabase.from('attachments').select('*')
+    .eq('transaction_table', table).eq('transaction_id', recordId);
+  if (error) { console.error(error); return []; }
+  return data;
+}
+export async function getAttachmentUrl(filePath) {
+  const { data, error } = await supabase.storage.from('attachments').createSignedUrl(filePath, 3600);
+  if (error) { console.error(error); return null; }
+  return data.signedUrl;
+}
+
+// ---------- Site colour theming (consistent colour per site across the app) ----------
+const SITE_PALETTE = ['#E8A33D', '#2B6CB0', '#2F855A', '#C0392B', '#805AD5', '#D69E2E'];
+export function siteColor(siteId, sites) {
+  if (!sites || !siteId) return SITE_PALETTE[0];
+  const idx = sites.findIndex(s => s.id === siteId);
+  return SITE_PALETTE[idx >= 0 ? idx % SITE_PALETTE.length : 0];
+}
+
+// ---------- Global search (searches names across all 4 ledgers) ----------
+async function openGlobalSearch() {
+  let overlay = document.getElementById('globalSearchOverlay');
+  if (overlay) { overlay.remove(); return; }
+  overlay = document.createElement('div');
+  overlay.id = 'globalSearchOverlay';
+  overlay.className = 'search-overlay';
+  overlay.innerHTML = `
+    <div class="search-panel">
+      <input type="search" id="globalSearchInput" placeholder="Search a name — client, supplier, contractor, labour…" autofocus>
+      <div id="globalSearchResults" class="text-sm text-muted">Type at least 2 letters…</div>
+    </div>`;
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+
+  const input = document.getElementById('globalSearchInput');
+  const resultsEl = document.getElementById('globalSearchResults');
+  input.addEventListener('input', debounce(async () => {
+    const q = input.value.trim();
+    if (q.length < 2) { resultsEl.innerHTML = '<div class="text-sm text-muted">Type at least 2 letters…</div>'; return; }
+    resultsEl.innerHTML = '<div class="text-sm text-muted">Searching…</div>';
+    const tables = [
+      { table: 'client_payments', nameCol: 'client_name', type: 'Client' },
+      { table: 'expense_transactions', nameCol: 'party_name_snapshot', type: 'Supplier' },
+      { table: 'contractor_payments', nameCol: 'contractor_name_snapshot', type: 'Contractor' },
+      { table: 'labour_payments', nameCol: 'labour_name_snapshot', type: 'Labour' },
+    ];
+    const matches = await Promise.all(tables.map(async t => {
+      const { data } = await supabase.from(t.table).select(t.nameCol).eq('status', 'active').ilike(t.nameCol, `%${q}%`).limit(200);
+      const names = [...new Set((data || []).map(r => r[t.nameCol]).filter(Boolean))];
+      return names.map(n => ({ name: n, type: t.type }));
+    }));
+    const flat = matches.flat();
+    const seen = new Set(), unique = [];
+    flat.forEach(m => { const k = m.name.toLowerCase() + '|' + m.type; if (!seen.has(k)) { seen.add(k); unique.push(m); } });
+    resultsEl.innerHTML = unique.length
+      ? unique.slice(0, 30).map(m => `
+          <div class="search-result-row">
+            <a href="reports.html?type=party&party=${encodeURIComponent(m.name)}" style="display:flex;justify-content:space-between;">
+              <span>${m.name}</span><span class="chip pending">${m.type}</span>
+            </a>
+          </div>`).join('')
+      : '<div class="text-sm text-muted">No matches found.</div>';
+  }, 300));
 }
 
 // ---------- Small UI helpers ----------

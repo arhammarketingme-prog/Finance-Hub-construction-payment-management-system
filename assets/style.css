@@ -276,6 +276,66 @@ fieldset { border: none; padding: 0; margin: 0; }
 }
 .subnav-chip.active { background: var(--ink); color: #fff; border-color: var(--ink); }
 
+/* --- Recent party quick-select --- */
+.recent-parties { display: flex; gap: 6px; overflow-x: auto; padding: 2px 0 4px; -webkit-overflow-scrolling: touch; }
+.recent-parties::-webkit-scrollbar { display: none; }
+.recent-chip {
+  flex: 0 0 auto; white-space: nowrap; font-size: 12px; font-weight: 600;
+  padding: 6px 11px; border-radius: 20px; background: #FDF3E1; color: var(--amber-dark);
+  border: 1px solid #F3DFB0;
+}
+.recent-chip:active { background: var(--amber); color: var(--ink); }
+
+/* --- Repeat-last-entry banner --- */
+.repeat-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  background: #E7EEF7; color: var(--info); border-radius: var(--radius-sm);
+  padding: 9px 12px; font-size: 12.5px; font-weight: 600; margin-bottom: 10px;
+}
+.repeat-banner button { background: var(--info); color: #fff; border: none; border-radius: 14px; padding: 5px 12px; font-size: 12px; font-weight: 700; }
+
+/* --- Site colour dot --- */
+.site-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+
+/* --- Attachment chip on a transaction row --- */
+.attach-chip {
+  display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 600;
+  color: var(--info); background: #E7EEF7; padding: 2px 7px; border-radius: 10px; border: none;
+}
+
+/* --- Global search --- */
+.global-search-btn { background: transparent; border: none; color: #fff; font-size: 17px; opacity: 0.85; padding: 2px 4px; }
+.search-overlay {
+  position: fixed; inset: 0; background: rgba(20,24,29,0.55); z-index: 100;
+  display: flex; align-items: flex-start; justify-content: center; padding-top: 60px;
+}
+.search-panel {
+  background: var(--card); width: 92%; max-width: 480px; border-radius: var(--radius);
+  padding: 16px; max-height: 75vh; overflow-y: auto; box-shadow: var(--shadow);
+}
+.search-panel input {
+  width: 100%; padding: 11px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm);
+  font-size: 15px; margin-bottom: 10px;
+}
+.search-result-row { padding: 10px 4px; border-bottom: 1px solid var(--line); }
+.search-result-row:last-child { border-bottom: none; }
+
+/* --- WhatsApp share button --- */
+.btn-whatsapp { background: #25D366; color: #fff; }
+
+/* --- Mini bar chart (dashboard) --- */
+.mini-chart { display: flex; align-items: flex-end; gap: 6px; height: 90px; padding: 6px 2px 0; }
+.mini-chart .bar-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; height: 100%; justify-content: flex-end; }
+.mini-chart .bar { width: 100%; border-radius: 4px 4px 0 0; background: var(--steel-soft); min-height: 2px; }
+.mini-chart .bar.receipts { background: var(--receipt); }
+.mini-chart .bar.expenses { background: var(--expense); }
+.mini-chart .bar-label { font-size: 9.5px; color: var(--steel); text-transform: uppercase; }
+
+/* --- Budget vs Actual bar --- */
+.budget-bar-track { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; margin: 6px 0; }
+.budget-bar-fill { height: 100%; border-radius: 4px; background: var(--receipt); }
+.budget-bar-fill.over { background: var(--expense); }
+
 .filter-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
 .filter-row select {
   padding: 7px 10px; border-radius: 20px; border: 1px solid var(--line);

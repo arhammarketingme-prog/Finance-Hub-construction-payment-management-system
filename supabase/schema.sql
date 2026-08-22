@@ -48,6 +48,7 @@ create table if not exists public.sites (
   id          uuid primary key default gen_random_uuid(),
   site_name   text not null unique,
   status      text not null default 'active' check (status in ('active','inactive')),
+  budget      numeric(14,2), -- optional overall budget for this site, for Budget vs Actual tracking
   created_at  timestamptz not null default now()
 );
 

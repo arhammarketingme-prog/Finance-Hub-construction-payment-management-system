@@ -20,7 +20,7 @@
   </div>
 
   <script type="module">
-    import { requireAuth, supabase, renderChrome, renderSubNav, getSites, formatINR, formatDate } from './assets/app.js';
+    import { requireAuth, supabase, renderChrome, renderSubNav, getSites, formatINR, formatDate, siteColor } from './assets/app.js';
 
     (async () => {
       const auth = await requireAuth(); if (!auth) return;
@@ -52,7 +52,7 @@
           <div class="txn-main">
             <div class="txn-party">${r.__name || '—'}</div>
             <div class="txn-meta">
-              <span class="site-tag">${siteMap[r.site_id] || ''}</span>
+              <span class="site-tag"><span class="site-dot" style="background:${siteColor(r.site_id, sites)}"></span>${siteMap[r.site_id] || ''}</span>
               <span class="chip pending">${r.__table}</span>
               ${formatDate(r.__date)}
             </div>

@@ -34,6 +34,13 @@
 
       <div class="card">
         <div class="flex between center">
+          <div class="section-label" style="margin:0;">This Month vs Last Month</div>
+        </div>
+        <div id="monthChart"><div class="text-sm text-muted">Loading…</div></div>
+      </div>
+
+      <div class="card">
+        <div class="flex between center">
           <div class="section-label" style="margin:0;">GST Summary</div>
         </div>
         <div id="gstSummary" class="text-sm text-muted">Loading…</div>
@@ -50,7 +57,7 @@
   </div>
 
   <script type="module">
-    import { requireAuth, supabase, renderChrome, currentSiteId, getSites, formatINR, formatDate } from './assets/app.js';
+    import { requireAuth, supabase, renderChrome, currentSiteId, getSites, formatINR, formatDate, siteColor } from './assets/app.js';
 
     (async () => {
       const auth = await requireAuth();
@@ -59,6 +66,7 @@
 
       const siteId = currentSiteId();
       const rpcSiteId = siteId === 'all' ? null : siteId;
+      const sites = await getSites();
 
       const { data: sum, error: sumErr } = await supabase.rpc('dashboard_summary', { p_site_id: rpcSiteId });
       const s = (sum && sum[0]) || {
@@ -84,13 +92,61 @@
       document.getElementById('gstSummary').innerHTML =
         `<div class="flex between"><span>GST collected (client receipts)</span><strong>${formatINR(s.gst_total)}</strong></div>`;
 
+      // This month vs last month — receipts and expenses side by side
+      (async () => {
+        const now = new Date();
+        const startThis = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+        const startLast = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString().slice(0, 10);
+        const endLast = new Date(now.getFullYear(), now.getMonth(), 0).toISOString().slice(0, 10);
+
+        async function monthSum(table, dateCol, from, to) {
+          let q = supabase.from(table).select('amount').eq('status', 'active').gte(dateCol, from);
+          if (to) q = q.lte(dateCol, to);
+          if (rpcSiteId) q = q.eq('site_id', rpcSiteId);
+          const { data } = await q;
+          return (data || []).reduce((sum, r) => sum + Number(r.amount), 0);
+        }
+
+        const [recvThis, recvLast, expThis, expLast] = await Promise.all([
+          monthSum('client_payments', 'payment_date', startThis, null),
+          monthSum('client_payments', 'payment_date', startLast, endLast),
+          monthSum('expense_transactions', 'transaction_date', startThis, null),
+          monthSum('expense_transactions', 'transaction_date', startLast, endLast),
+        ]);
+        const maxVal = Math.max(recvThis, recvLast, expThis, expLast, 1);
+        const barH = (v) => Math.max(4, Math.round((v / maxVal) * 90));
+        document.getElementById('monthChart').innerHTML = `
+          <div class="mini-chart">
+            <div class="bar-wrap">
+              <div class="bar receipts" style="height:${barH(recvLast)}px"></div>
+              <div class="bar-label">Rcv · Last</div>
+            </div>
+            <div class="bar-wrap">
+              <div class="bar receipts" style="height:${barH(recvThis)}px"></div>
+              <div class="bar-label">Rcv · This</div>
+            </div>
+            <div class="bar-wrap">
+              <div class="bar expenses" style="height:${barH(expLast)}px"></div>
+              <div class="bar-label">Exp · Last</div>
+            </div>
+            <div class="bar-wrap">
+              <div class="bar expenses" style="height:${barH(expThis)}px"></div>
+              <div class="bar-label">Exp · This</div>
+            </div>
+          </div>
+          <div class="flex between text-sm text-muted mt-8">
+            <span>Receipts: ${formatINR(recvLast)} → ${formatINR(recvThis)}</span>
+            <span>Expenses: ${formatINR(expLast)} → ${formatINR(expThis)}</span>
+          </div>`;
+      })();
+
       // Site-wise summary (computed in the DB, so it's accurate no matter how many rows exist)
       const { data: siteRows, error: siteErr } = await supabase.rpc('site_summary');
       if (siteErr) console.error(siteErr);
       document.getElementById('siteSummary').innerHTML = (siteRows && siteRows.length)
         ? siteRows.map(r => `
           <div class="flex between" style="padding:6px 0;">
-            <span class="site-tag">${r.site_name}</span>
+            <span class="site-tag"><span class="site-dot" style="background:${siteColor(r.site_id, sites)}"></span>${r.site_name}</span>
             <span class="text-sm"><span style="color:var(--receipt)">${formatINR(r.total_receipts)}</span> · <span style="color:var(--expense)">${formatINR(r.total_expenses)}</span></span>
           </div>`).join('')
         : '<div class="text-sm text-muted">No sites yet.</div>';

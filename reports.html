@@ -67,6 +67,7 @@
       <div id="exportRow" class="btn-row rt-list-only rt-party-only rt-pending-only rt-gst-only" style="margin-bottom:16px;">
         <button class="btn btn-secondary" id="exportExcelBtn">Export Excel</button>
         <button class="btn btn-secondary" id="exportPdfBtn">Export PDF</button>
+        <button class="btn btn-whatsapp" id="shareWhatsappBtn">Share</button>
       </div>
 
       <!-- ===== Party ledger header card ===== -->
@@ -81,6 +82,7 @@
       </div>
 
       <!-- ===== Site summary matrix ===== -->
+      <div class="card hidden" id="budgetCard"></div>
       <div class="card table-scroll hidden" id="siteSummaryCard">
         <table class="data-table" id="siteTable">
           <thead>
@@ -102,7 +104,7 @@
   <script type="module">
     import {
       requireAuth, supabase, renderChrome, getSites, formatINR, formatDate,
-      showBanner, fetchAllRows, searchParties, debounce
+      showBanner, fetchAllRows, searchParties, debounce, siteColor
     } from './assets/app.js';
 
     let auth, sites, currentType = 'list', currentRows = [], selectedParty = null;
@@ -135,6 +137,7 @@
       document.getElementById('applyBtn').addEventListener('click', runReport);
       document.getElementById('exportExcelBtn').addEventListener('click', exportExcel);
       document.getElementById('exportPdfBtn').addEventListener('click', () => window.print());
+      document.getElementById('shareWhatsappBtn').addEventListener('click', shareOnWhatsapp);
       const partyNameInput = document.getElementById('partyNameInput');
       partyNameInput.addEventListener('input', debounce(refreshPartyOptions, 250));
 
@@ -154,6 +157,7 @@
           .forEach(el => el.classList.add('hidden'));
         document.querySelectorAll(`.rt-${type}-only`).forEach(el => el.classList.remove('hidden'));
         document.getElementById('siteSummaryCard').classList.toggle('hidden', type !== 'site');
+        document.getElementById('budgetCard').classList.toggle('hidden', type !== 'site');
         document.getElementById('ledgerCard').classList.toggle('hidden', type !== 'ledger');
         document.getElementById('partyHeaderCard').classList.add('hidden');
         if (type === 'party') document.getElementById('partyFilterRow').classList.remove('hidden');
@@ -316,7 +320,7 @@
         currentRows = data || [];
         document.getElementById('siteBody').innerHTML = (data || []).map(r => `
           <tr>
-            <td><span class="site-tag">${r.site_name}</span></td>
+            <td><span class="site-tag"><span class="site-dot" style="background:${siteColor(r.site_id, sites)}"></span>${r.site_name}</span></td>
             <td>${formatINR(r.client_total)}</td>
             <td>${formatINR(r.expense_total)}</td>
             <td>${formatINR(r.contractor_total)}</td>
@@ -325,6 +329,41 @@
             <td>${formatINR(Number(r.client_online) + Number(r.expense_online) + Number(r.contractor_online) + Number(r.labour_online))}</td>
             <td>${formatINR(r.gst_total)}</td>
           </tr>`).join('') || `<tr><td colspan="8" class="text-sm text-muted">No sites yet.</td></tr>`;
+
+        // Budget vs Actual — pulls the site's total spend (expenses+contractor+labour) against
+        // an optional budget figure the user can set inline, per site.
+        const { data: siteRows } = await supabase.from('sites').select('id, site_name, budget').eq('status', 'active').order('site_name');
+        const budgetCard = document.getElementById('budgetCard');
+        budgetCard.innerHTML = `<div class="section-label" style="margin-top:0;">Budget vs Actual</div>` +
+          (siteRows || []).map(site => {
+            const totals = (data || []).find(d => d.site_id === site.id);
+            const spent = totals ? Number(totals.expense_total) + Number(totals.contractor_total) + Number(totals.labour_total) : 0;
+            const budget = Number(site.budget || 0);
+            const pct = budget > 0 ? Math.min(100, Math.round((spent / budget) * 100)) : 0;
+            const over = budget > 0 && spent > budget;
+            return `
+              <div style="margin-bottom:14px;">
+                <div class="flex between" style="margin-bottom:4px;">
+                  <span class="site-tag"><span class="site-dot" style="background:${siteColor(site.id, sites)}"></span>${site.site_name}</span>
+                  <span class="text-sm">${formatINR(spent)}${budget > 0 ? ' / ' + formatINR(budget) : ''}</span>
+                </div>
+                ${budget > 0 ? `<div class="budget-bar-track"><div class="budget-bar-fill ${over ? 'over' : ''}" style="width:${pct}%"></div></div>` : ''}
+                <div class="flex gap-8" style="margin-top:4px;">
+                  <input type="number" class="budget-input" data-site="${site.id}" placeholder="Set budget (₹)" value="${site.budget || ''}"
+                    style="flex:1;padding:6px 10px;border:1px solid var(--line);border-radius:6px;font-size:12.5px;">
+                  <button class="btn btn-sm btn-secondary save-budget-btn" data-site="${site.id}">Save</button>
+                </div>
+              </div>`;
+          }).join('');
+
+        budgetCard.querySelectorAll('.save-budget-btn').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            const input = budgetCard.querySelector(`.budget-input[data-site="${btn.dataset.site}"]`);
+            const val = input.value ? parseFloat(input.value) : null;
+            const { error: saveErr } = await supabase.from('sites').update({ budget: val }).eq('id', btn.dataset.site);
+            if (!saveErr) runSiteReport(); else showBanner(document.getElementById('banner'), 'Could not save budget.', 'error');
+          });
+        });
       }
 
       async function runPendingReport() {
@@ -397,6 +436,27 @@
             <strong style="color:${Number(r.balance) >= 0 ? 'var(--receipt)' : 'var(--expense)'}">${formatINR(r.balance)}</strong>
           </div>
         `;
+      }
+
+      function shareOnWhatsapp() {
+        const siteSel = document.getElementById('filterSite');
+        const siteLabel = siteSel.options[siteSel.selectedIndex]?.text || 'All Sites';
+        let lines = [`*Finance Hub — ${currentType.charAt(0).toUpperCase() + currentType.slice(1)} Report*`, `Site: ${siteLabel}`, ''];
+
+        if (currentType === 'site') {
+          (currentRows || []).forEach(r => {
+            lines.push(`*${r.site_name}*: Credit ${formatINR(r.client_total)} · Expense ${formatINR(r.expense_total)}`);
+          });
+        } else {
+          const total = (currentRows || []).reduce((s, r) => s + r.amount, 0);
+          const expTotal = (currentRows || []).reduce((s, r) => s + (r.expenseAmount || 0), 0);
+          const debTotal = (currentRows || []).reduce((s, r) => s + (r.debitAmount || 0), 0);
+          lines.push(`Entries: ${(currentRows || []).length}`);
+          lines.push(`Credit Total: ${formatINR(expTotal)}`);
+          lines.push(`Debit Total: ${formatINR(debTotal)}`);
+        }
+        const text = encodeURIComponent(lines.join('\n'));
+        window.open(`https://wa.me/?text=${text}`, '_blank');
       }
 
       function exportExcel() {
